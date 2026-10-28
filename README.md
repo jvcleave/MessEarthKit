@@ -15,6 +15,9 @@ Open `MessEarthKit/MessEarthKit.xcodeproj`, select **MessEarthKitExample / My Ma
 and Run. The existing project links the root Swift package; the app module is
 named `MessEarthKitExample` to distinguish it from the library module.
 
+For live captures, complete [Google Maps API key setup](#google-maps-api-key-setup)
+first. The bundled reference and local-file imports work without a Google key.
+
 For a geographic capture:
 
 1. Enter an address and click **Resolve Address**, or enter coordinates directly.
@@ -80,6 +83,55 @@ Local workflows remain available:
 The example imports/prepares on a worker. It uses event-driven Metal drawing and
 does not observe vertex arrays or GPU resources through SwiftUI. Source
 authorization stays active until the job finishes or observes cancellation.
+
+## Google Maps API key setup
+
+Live capture uses **Google Maps Platform → Map Tiles API → Photorealistic 3D
+Tiles**, service `tile.googleapis.com`. You need a Google Cloud account, a project
+linked to an active billing account, and permission to enable APIs and manage
+keys in that project. Google's [Map Tiles setup guide](https://developers.google.com/maps/documentation/tile/get-api-key)
+covers the Cloud requirements and credential screens. Steps checked October 28,
+2026:
+
+1. In the [Google Cloud Console](https://console.cloud.google.com/), select or
+   create your project, then open **Billing** and link its billing account.
+2. Open the API Library, find **Map Tiles API**, and enable it for that project.
+   Selecting an API in a key's restrictions does not enable the API itself.
+3. Open Google Maps Platform's **Keys & Credentials** page and create an API key
+   dedicated to MessEarthKit. Name it so its purpose is clear.
+4. Set the key's API restriction to **Map Tiles API** only, then save it.
+5. For this direct-HTTPS macOS development client, set the application restriction
+   to **IP addresses** and allow your Mac's public outbound IPv4/IPv6 addresses.
+   Use the addresses Google sees through your router or VPN. Update them when
+   your network changes. This follows Google's [web-service key restriction guidance](https://developers.google.com/maps/api-security-best-practices).
+6. Open Google Maps Platform's **Quotas**, select Map Tiles API, and review the
+   Photorealistic 3D Tiles daily root-tileset quota. Set a project limit appropriate
+   for your usage. Google's [quota instructions](https://developers.google.com/maps/documentation/tile/usage-and-billing)
+   describe how to change it. This project-level quota is separate from the app's
+   **Maximum Requests**, which counts metadata and GLB requests within one capture.
+7. Run **MessEarthKitExample**, enter the key string in its secure field, resolve
+   an address, and click **Capture Region**. A newly enabled API can take a few
+   minutes to become available. The field takes the
+   key string, not its Cloud resource ID or display name.
+
+Manual entry keeps the key in memory for the current app session. The example
+does not currently save newly entered keys. Optional automatic loading reads a
+generic-password item from the login Keychain with service
+`com.jvclabs.MessEarthKit.MapTiles` and account `default`; its password is the key
+string. Provisioning this item is separate from creating the Cloud key, and the
+signed app must have permission to read it. Restart the app after provisioning.
+The key stays out of repository files and saved captures.
+
+Common setup issues:
+
+| Symptom | What to check |
+| --- | --- |
+| Google rejects the key | Confirm billing, API enablement, API restrictions, and the allowed public IP addresses in the same project as the key. |
+| HTTP 429 | Check the project's root-request quota and service rate limits. Changing region/detail does not reset them. |
+| Source request count exceeded | Increase the app's Maximum Requests or reduce the capture area; this is a local per-attempt budget. |
+| Key field is empty after relaunch | Re-enter a session-only key, or check the optional Keychain item's service, account, and app access. |
+
+### Existing development configuration
 
 The configured development project is `jvclabs-migration-2026`; its dedicated
 **MessEarthKit Development** key permits only Map Tiles API and this Mac's
