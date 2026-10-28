@@ -32,11 +32,11 @@ For a geographic capture:
    shows requests used against this budget. Raise it to allow more source
    requests while retaining the separate byte, traversal, and geometry limits.
 3. Enter your Google Maps Tile API key in the secure field and click
-   **Capture Region**. Map Tiles must be enabled for that key's project. This
-   development setup also loads its dedicated login-Keychain item automatically
-   at launch (`com.jvclabs.MessEarthKit.MapTiles`, account `default`). Manual field
-   edits take precedence over a pending credential load. Keys are absent from
-   preferences, source files, saved captures, and diagnostics.
+   **Capture Region**. Map Tiles must be enabled for your key's project. Optional
+   automatic loading from a local login-Keychain item is described in
+   [key setup](#google-maps-api-key-setup). Manual field edits take precedence over
+   a pending credential load. Keys are absent from preferences, source files,
+   saved captures, and diagnostics.
 4. Preview, then click **Save Capture…** and choose a new folder. Captures store
    their original GLB payloads plus a local `tileset.json` with placement data.
    Reopen it through **Open Tileset Folder…** without needing a key or network.
@@ -87,9 +87,11 @@ authorization stays active until the job finishes or observes cancellation.
 ## Google Maps API key setup
 
 Live capture uses **Google Maps Platform → Map Tiles API → Photorealistic 3D
-Tiles**, service `tile.googleapis.com`. You need a Google Cloud account, a project
-linked to an active billing account, and permission to enable APIs and manage
-keys in that project. Google's [Map Tiles setup guide](https://developers.google.com/maps/documentation/tile/get-api-key)
+Tiles**, service `tile.googleapis.com`. Use your own Google Cloud project and API
+key. You need a Google Cloud account, a project linked to an active billing
+account, and permission to enable APIs and manage keys in that project. The
+example uses the project associated with your key; no Cloud project ID is entered
+in the app. Google's [Map Tiles setup guide](https://developers.google.com/maps/documentation/tile/get-api-key)
 covers the Cloud requirements and credential screens. Steps checked October 28,
 2026:
 
@@ -120,7 +122,9 @@ generic-password item from the login Keychain with service
 `com.jvclabs.MessEarthKit.MapTiles` and account `default`; its password is the key
 string. Provisioning this item is separate from creating the Cloud key, and the
 signed app must have permission to read it. Restart the app after provisioning.
-The key stays out of repository files and saved captures.
+The service name identifies the example app's local credential and is independent
+of your Google Cloud project ID. The key stays out of repository files and saved
+captures.
 
 Common setup issues:
 
@@ -130,21 +134,6 @@ Common setup issues:
 | HTTP 429 | Check the project's root-request quota and service rate limits. Changing region/detail does not reset them. |
 | Source request count exceeded | Increase the app's Maximum Requests or reduce the capture area; this is a local per-attempt budget. |
 | Key field is empty after relaunch | Re-enter a session-only key, or check the optional Keychain item's service, account, and app access. |
-
-### Existing development configuration
-
-The configured development project is `jvclabs-migration-2026`; its dedicated
-**MessEarthKit Development** key permits only Map Tiles API and this Mac's
-verified public egress addresses. Network/VPN/address changes may require updating
-the key's IP restrictions in Google Cloud. Keychain access belongs to the example
-app and is independent of the reusable package.
-The development project's effective **3D Tiles root-request quota is 100 per day**,
-raised from 10 with user authorization and verified through Google Service Usage.
-Google's quota records confirmed that the previous 10/day cap rejected test root
-requests with HTTP 429. Changing region dimensions or geometric error does not
-reset a quota; the app identifies quota/rate limiting in its error message.
-Restart the example app after provisioning the Keychain item so the secure field
-loads it. A real root-tileset request returned HTTP 200 with these restrictions.
 
 ## Package use
 
