@@ -1,0 +1,38 @@
+{
+  "asset": {
+    "version": "1.1"
+  },
+  "geometricError": 100,
+  "root": {
+    "boundingVolume": {
+      "sphere": [
+        2,
+        2,
+        1,
+        6
+      ]
+    },
+    "geometricError": 0,
+    "transform": [
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      0,
+      0,
+      1,
+      1
+    ],
+    "content": {
+      "uri": "block.glb"
+    }
+  }
+}

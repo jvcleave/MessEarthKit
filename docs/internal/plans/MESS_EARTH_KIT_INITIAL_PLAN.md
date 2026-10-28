@@ -1,7 +1,8 @@
 # MessEarthKit Initial Plan
 
-Status: proposed implementation plan; no implementation started.
-Updated: 2026-10-27 (America/New_York).
+Status: capture workflow verified with controlled responses and a complete real
+Google capture/save/reopen. GUI visual validation and consumer delivery remain pending.
+Updated: 2026-10-28 (America/New_York).
 Owning repository: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
 
 ## Objective and definition of done
@@ -31,13 +32,46 @@ evaluated if selected, and its export suggestions do not settle GLB versus USDZ.
 
 ## Current source findings
 
-- This repository contains an uncommitted Xcode macOS starter app under
-  `MessEarthKit/`, with no root Swift package or capture implementation yet.
-- The app target currently specifies macOS 15.6, Swift 5 language mode, main-actor
-  default isolation, sandboxing, and user-selected read-only access. Project-level
-  deployment settings also contain macOS 27.0. Reconcile those settings deliberately
-  when establishing the package/app build, and add the network/export permissions
-  the app actually needs.
+- The root Swift package has private pinned GLTFKit2 0.5.15 and DracoSwift 1.5.7
+  adapters, immutable CPU assets, local GLB/tileset import, bounded region/detail
+  capture, and source-folder save/reopen. Sixteen focused tests use the original
+  shared fixture, an independent compressed Khronos/Cesium fixture, and controlled
+  source responses. The integration probe remains a separate non-UI client.
+- The existing Xcode project now links that package and has a shared
+  `MessEarthKitExample` app scheme plus app-owned Metal preview and file controls.
+  App/project deployment targets are 15.6. The package uses Swift 6 language
+  mode; the example keeps Swift 5 mode and explicitly isolates UI state while
+  resource preparation remains off the main actor. Network-client and user-selected
+  read/write entitlements support capture and saving. The app has address lookup,
+  key/region/detail controls, preview, cancellation, and save/reveal actions.
+  An app-owned estimate beside Capture Region shows the dated global list rate
+  of $0.006 per attempt and the shared 1000/month free allowance, without claiming
+  to know remaining allowance or actual billing totals.
+  Maximum Requests now sets a positive per-attempt source-request budget, default
+  512; progress shows used/allowed requests. The package's immutable request
+  carries that budget through traversal and into recovery metadata.
+- Capture checkpoints now preserve each completed selected tile in an app-owned
+  recovery folder. Interrupted captures can preview and reopen offline with an
+  explicit incomplete reason; cancellation and decode failure retain raw files
+  too. Completion clears the marker only after successful traversal and decode.
+  The app discovers the latest download after restart and provides open/reveal
+  controls. The original failed in-memory attempt has no retained files to recover.
+  Import and other capture limits remain independent; traversal resume is deferred.
+- The supplied target address, 613 Race St, Cincinnati, Ohio, resolved to one
+  MapKit result at 39.1026327, -84.515172. It is prefilled in the app's address
+  field; coordinates can also be entered directly. The user authorized using
+  `jvclabs-migration-2026` to provision a restricted development key. Map Tiles is
+  enabled, the key is in the example's dedicated login-Keychain item, and a real
+  authenticated root request succeeded. The root daily quota is capped at 100,
+  raised from 10 with explicit user authorization after quota-triggered HTTP 429s.
+- Google's required `3DTILES_content_gltf` declaration is now accepted by both
+  local and network readers. The false detail error came from selecting tiles
+  on the opposite side of Earth; region selection now culls those bounds.
+  The real source also omits optional texture-filter settings, now handled with
+  explicit client defaults. A **200 x 200 m / 4 m** capture at the supplied address
+  saves and reopens successfully: **112 GLBs, 152 meshes, 184737 triangles,
+  554211 prepared vertices, and 8202022 retained source bytes**. The source uses
+  `KHR_materials_unlit`; compressed compatibility is covered independently.
 - CMResearchKit has one public library module, immutable Sendable API values,
   explicitly isolated engines, and a nested example app that uses public APIs.
   The example owns presentation, file locations, scheduling, and Metal preview.
@@ -60,6 +94,7 @@ Sources/MessEarthKit/
     Tiles/               Source requests, tileset traversal, selection, decoding
     Geometry/            Geographic transforms and local mesh preparation
     Export/              Optional format conversion after the delivery decision
+Sources/EarthDracoBridge/ Private native codec bridge
 Tests/MessEarthKitTests/  Focused network-free contract tests
 Tools/IntegrationProbe/  Small programmatic capture/decode client
 MessEarthKit/            Existing Xcode example app and project
@@ -89,8 +124,12 @@ Proposed API responsibilities, with names finalized during implementation:
 
 - `EarthCaptureRequest`: geographic region, detail target, and resource budgets.
 - `EarthCaptureSession`: explicitly isolated capture work with cancellation.
-- `EarthCaptureResult`: immutable CPU assets, local frame, actual selected bounds,
-  coverage/completeness, counts, and source metadata.
+  An optional new recovery directory retains completed tiles and an atomic local
+  manifest while preserving the original error/cancellation contract.
+- `EarthCapture`: immutable CPU assets, local frame, actual selected bounds,
+  counts, original source bytes, and source metadata. Unsupported or incomplete
+  requests throw instead of returning an apparently complete partial capture.
+  Reopened checkpoints expose `incompleteReason`, preserved through saving.
 - `EarthCaptureProgress` / `EarthCaptureError`: typed progress and actionable
   failures, without client UI state or credential-bearing URLs.
 - Format-specific exporter APIs are deferred until the consumer format is chosen;
@@ -104,8 +143,9 @@ a process-wide singleton or require runtime Python, Blender, or developer tools.
 
 ## Capture and output contract
 
-1. Begin with a center coordinate and bounded dimensions in meters. Coordinate
-   entry is sufficient for the technical proof; location search is later UI work.
+1. Begin with a center coordinate and bounded dimensions in meters. The example's
+   app-owned address lookup supplies coordinates without adding MapKit to the
+   package; direct coordinate entry remains available.
 2. Select tiles by geographic intersection and geometric error/detail. Respect
    nested transforms and refinement rules so parent/child content is not
    accidentally duplicated or omitted. Define coverage and limit outcomes
@@ -156,6 +196,22 @@ sidecar are part of the deferred delivery decision.
 
 ### 1. Native capture and decode proof
 
+Local-fixture checkpoint: complete for the user-selected local-only pass. The
+native probe produces 4 meshes, 56 vertices, 28 triangles, and the reference
+bounds. Five focused tests, an actual-shader 2×2 Metal color/orientation check,
+and the explicitly selected macOS app build passed. App resources and signatures
+were inspected; the GUI was not launched after Xcode integration access was
+declined. See [README](../../../README.md) for supported formats and how to run
+the example. The original full milestone's real-source capture remains pending.
+
+Capture-workflow checkpoint: Draco decoding now matches an independent
+uncompressed reference within quantization tolerances. Eleven tests and the
+affected app build pass. Controlled responses prove geographic selection,
+refinement/session handling, bounded requests, cancellation, sanitized errors,
+and independent save/reopen. The supplied address lookup and signed app
+network/file permissions were checked. Actual Google coverage, source material
+fidelity, and live compression variants still require an authenticated capture.
+
 Establish the root package, concise repository guidance/README, and a small
 programmatic client while preserving the starter app. Select and pin the minimum
 decoder dependencies based on real payload and synthetic-asset evidence. Capture
@@ -176,6 +232,11 @@ key; build the synthetic decode/placement proof independently if it is unavailab
 
 ### 2. Reliable reusable capture engine
 
+Current implementation provides bounded serial networking, region/error
+selection, cancellation, typed errors, and original-source persistence. Its
+controlled-response tests pass; real-source acceptance remains pending before
+this milestone can be considered complete.
+
 Complete explicit region/detail semantics, bounded traversal/download/decode,
 resource preflight, deterministic output selection, typed progress/errors,
 cancellation, and temporary-file cleanup. Retain only meaningful coverage for
@@ -187,6 +248,12 @@ public API, failures/cancellation are distinguishable, and budget exhaustion or
 partial coverage cannot be mistaken for a complete capture.
 
 ### 3. macOS example application
+
+The initial capture/preview/save workflow and app-owned address lookup are
+implemented. The default target is the supplied Cincinnati address. A key is
+entered in a secure field or loaded from the app's dedicated Keychain item.
+Interactive map selection,
+final export controls, and real capture acceptance remain later work.
 
 Replace the starter screen with a focused workflow: credentials, location/region,
 detail/budget controls, capture/cancel, prepared-result preview, and save/reveal.
@@ -216,7 +283,9 @@ capture app no longer running, and the repository builds without sibling paths.
 
 ## Verification and first decisions
 
-- This planning change requires diff review only; do not build the starter app.
+- Documentation-only updates require diff review only. The implemented local
+  checkpoint has already passed its focused package/probe/Metal/app checks;
+  repeat them only for relevant subsequent changes.
 - Implementation uses focused network-free tests for the distinct risks above,
   one opt-in live integration probe, and the affected macOS example-app build.
 - If USDZ is selected, use MessUSDZImportKit's existing inspection tool as an

@@ -1,0 +1,113 @@
+{
+  "asset": {
+    "version": "1.1"
+  },
+  "geometricError": 100,
+  "root": {
+    "boundingVolume": {
+      "box": [
+        0,
+        0,
+        0,
+        20,
+        0,
+        0,
+        0,
+        20,
+        0,
+        0,
+        0,
+        5
+      ]
+    },
+    "geometricError": 100,
+    "refine": "REPLACE",
+    "transform": [
+      0,
+      1,
+      0,
+      0,
+      0,
+      0,
+      1,
+      0,
+      1,
+      0,
+      0,
+      0,
+      6378137,
+      0,
+      0,
+      1
+    ],
+    "content": {
+      "uri": "block.glb"
+    },
+    "children": [
+      {
+        "boundingVolume": {
+          "sphere": [
+            2,
+            2,
+            1,
+            6
+          ]
+        },
+        "geometricError": 0,
+        "transform": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          -5,
+          0,
+          0,
+          1
+        ],
+        "content": {
+          "uri": "block.glb"
+        }
+      },
+      {
+        "boundingVolume": {
+          "sphere": [
+            2,
+            2,
+            1,
+            6
+          ]
+        },
+        "geometricError": 0,
+        "transform": [
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          0,
+          0,
+          0,
+          1,
+          0,
+          5,
+          2,
+          0,
+          1
+        ],
+        "content": {
+          "uri": "nested.json"
+        }
+      }
+    ]
+  }
+}
