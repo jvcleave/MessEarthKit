@@ -8,13 +8,16 @@ public struct EarthCaptureRequest: Sendable
     public let maximumGeometricErrorMeters: Double
     /// Maximum uncached source requests, including JSON metadata and GLB payloads.
     public let maximumSourceRequests: Int
+    /// Maximum selected GLB placements, including placements that reuse a download.
+    public let maximumSelectedTiles: Int
 
     public init(
         center: EarthGeographicOrigin,
         widthMeters: Double = 200,
         depthMeters: Double = 200,
         maximumGeometricErrorMeters: Double = 4,
-        maximumSourceRequests: Int = 512
+        maximumSourceRequests: Int = 512,
+        maximumSelectedTiles: Int = 256
     ) throws
     {
         guard widthMeters.isFinite, depthMeters.isFinite, maximumGeometricErrorMeters.isFinite,
@@ -23,11 +26,14 @@ public struct EarthCaptureRequest: Sendable
         else { throw EarthImportError.invalidContent("Region dimensions must be 10–5000 m and detail error 0.1–1000 m.") }
         guard maximumSourceRequests > 0
         else { throw EarthImportError.invalidContent("Maximum Requests must be a positive whole number.") }
+        guard maximumSelectedTiles > 0
+        else { throw EarthImportError.invalidContent("Maximum Tiles must be a positive whole number.") }
         self.center = center
         self.widthMeters = widthMeters
         self.depthMeters = depthMeters
         self.maximumGeometricErrorMeters = maximumGeometricErrorMeters
         self.maximumSourceRequests = maximumSourceRequests
+        self.maximumSelectedTiles = maximumSelectedTiles
     }
 }
 

@@ -15,6 +15,12 @@ Open `MessEarthKit/MessEarthKit.xcodeproj`, select **MessEarthKitExample / My Ma
 and Run. The existing project links the root Swift package; the app module is
 named `MessEarthKitExample` to distinguish it from the library module.
 
+When developing alongside MessScene in a MESS checkout, open the parent
+**MESS.xcworkspace** instead. It includes the shared package and example project;
+select **MessEarthKitExample** or **MessSceneApp** there. Close standalone project
+or package windows before switching to the shared workspace so Xcode can release
+their ownership of the local package.
+
 For live captures, complete [Google Maps API key setup](#google-maps-api-key-setup)
 first. The bundled reference and local-file imports work without a Google key.
 
@@ -31,13 +37,41 @@ For a geographic capture:
    per attempt. It counts root/child JSON metadata and GLB downloads; progress
    shows requests used against this budget. Raise it to allow more source
    requests while retaining the separate byte, traversal, and geometry limits.
-3. Enter your Google Maps Tile API key in the secure field and click
-   **Capture Region**. Map Tiles must be enabled for your key's project. Optional
+   **Maximum Tiles** accepts a positive whole number and defaults to **256**
+   selected placements per attempt, including placements that reuse a downloaded
+   GLB. Raise it independently when capture reaches the selected-tile limit.
+   **Maximum Vertices** defaults to **2,000,000** total decoded vertices and
+   applies to live capture, recovery, and local-file imports. If geometry
+   preparation reaches this budget, raise it and use **Open Last Download** to
+   retry the saved files without another API capture. The field accepts positive
+   whole numbers within the SDK's supported index range.
+   **Maximum Textures (MiB)** defaults to **256** and limits total base-level
+   decoded RGBA bytes. It applies to capture, inspection, recovery, and local-file
+   imports. Raise it and use **Open Last Download** to retry existing sources.
+3. The **Offline estimate** updates as you edit settings, without an API key or
+   any Google request. It projects broad tile/request, vertex, source-byte, and
+   buffer ranges from local measurements at the same detail within 2 km. With
+   no matching measurement, it shows area and configured buffer budgets and says
+   there is not enough data to predict workload. These rough ranges never block
+   capture. See [offline estimates](#offline-estimates) for the assumptions.
+4. For an optional network inspection, enter your Google Maps Tile API key and
+   click **Inspect via API**. This starts a Google session. It traverses JSON to count
+   tile placements and planned unique GLB requests. If those counts exceed your
+   budgets, it stops before GLBs. Otherwise it downloads GLBs and estimates
+   vertices, geometry-buffer bytes, base-level texture RGBA bytes, and texture
+   dimensions from metadata without building meshes or GPU resources. Over-limit
+   rows are highlighted; incomplete selection counts are labeled as lower bounds.
+   Adjust limits and inspect again when geometry has not been inspected.
+   Budget edits refresh comparisons immediately. Changing coordinates, area, or
+   detail clears the old result. Then click **Capture Region**: a completed
+   inspection's source bytes are reused without another session or download, and
+   the current vertex/texture budgets are applied during full import validation.
+   Map Tiles must be enabled for your key's project. Optional
    automatic loading from a local login-Keychain item is described in
    [key setup](#google-maps-api-key-setup). Manual field edits take precedence over
    a pending credential load. Keys are absent from preferences, source files,
    saved captures, and diagnostics.
-4. Preview, then click **Save Capture…** and choose a new folder. Captures store
+5. Preview, then click **Save Capture…** and choose a new folder. Captures store
    their original GLB payloads plus a local `tileset.json` with placement data.
    Reopen it through **Open Tileset Folder…** without needing a key or network.
 
@@ -133,7 +167,23 @@ Common setup issues:
 | Google rejects the key | Confirm billing, API enablement, API restrictions, and the allowed public IP addresses in the same project as the key. |
 | HTTP 429 | Check the project's root-request quota and service rate limits. Changing region/detail does not reset them. |
 | Source request count exceeded | Increase the app's Maximum Requests or reduce the capture area; this is a local per-attempt budget. |
+| Selected tile count exceeded | Increase the app's Maximum Tiles, increase Detail error, or reduce the capture area; this is a separate local placement budget. |
+| Capture vertex count exceeded | Increase Maximum Vertices and use Open Last Download to retry saved sources, or capture a smaller area with less detail. The error reports the budget and next-tile total, which is a lower bound for the full capture. |
+| Capture decoded texture bytes exceeded | Increase Maximum Textures (MiB) and use Open Last Download. This counts base-level RGBA bytes across the capture, rather than compressed image file size or total GPU memory. |
 | Key field is empty after relaunch | Re-enter a session-only key, or check the optional Keychain item's service, account, and app access. |
+
+## Import into MessScene
+
+The MESS workspace's MessScene app can import saved capture folders through
+**MODELS → EARTH CAPTURES → IMPORT**. Choose the folder containing `tileset.json`
+and its local payloads, then press the imported thumbnail to place the model.
+MessScene owns copies of the sources, geometry, and images; subsequent placement
+and saved-scene reopening do not need the original folder or a Google key.
+Partial source captures retain their incomplete report in the model library.
+This first adapter supports opaque imagery with linear sampling and matching
+wrap modes on both axes. It rejects vertex colors, transparency, unsupported
+sampling, and meshes beyond MessScene's per-mesh capacity explicitly. Final
+standalone GLB/USDZ export remains a separate decision.
 
 ## Package use
 
@@ -156,18 +206,41 @@ let capture = try await importer.importFile(fileURL: selectedURL)
 // The host owns authorization, rendering, destination selection, and persistence.
 ```
 
+Hosts with their own file-access boundary can instead supply immutable
+`EarthSourceFile(relativePath:data:)` values to
+`importer.importSourceFiles(sourceFiles:rootSourcePath:)`. Relative references,
+geometry, and resource limits use the same decoder without opening source files.
+
 ```swift
 let center = try EarthGeographicOrigin(latitude: 39.1026327, longitude: -84.515172)
 let request = try EarthCaptureRequest(
     center: center, widthMeters: 200, depthMeters: 200,
-    maximumSourceRequests: 1024
+    maximumSourceRequests: 1024, maximumSelectedTiles: 512
 )
-let session = EarthCaptureSession(apiKey: suppliedKey)
+let limits = EarthImportLimits(maximumVertices: 4_000_000, maximumDecodedTextureBytes: 512 * 1024 * 1024)
+let session = EarthCaptureSession(apiKey: suppliedKey, limits: limits)
 let capture = try await session.capture(request: request) { progress in
     // Deliver throttled presentation updates to the host's UI actor.
 }
 let rootFile = try await EarthCaptureStore().save(capture: capture, directoryURL: newFolderURL)
 ```
+
+For a staged estimate before native mesh decoding:
+
+```swift
+let check = try await session.precheck(request: request, recoveryDirectoryURL: newRecoveryFolderURL)
+// Compare check.selectedTileCount, plannedSourceRequests, and optional geometry
+// against host budgets. An incomplete check reports lower-bound counts.
+if check.hasReusableSources {
+    let prepared = try await EarthCaptureImporter(limits: limits).importPrechecked(precheck: check)
+    // This import decodes meshes without further network access.
+}
+```
+
+`matchesSelection` lets hosts retain completed sources when only budgets change.
+Checkpoints from a completed precheck describe complete source coverage, even
+when the estimated geometry exceeds the current import budget. Interrupted
+prechecks retain the last completed source checkpoint with an interruption reason.
 
 For durable recovery, pass `recoveryDirectoryURL: newRecoveryFolderURL` to
 `capture`. The parent must exist and the recovery folder must be new. Each
@@ -226,12 +299,21 @@ prepared vertices, texture dimensions, and estimated base-level RGBA texture
 bytes. Those limits are capture settings, separate from the eventual consumer's
 limits; they are not a claim about total process/GPU memory. Local tile references
 must remain within the selected directory, including after resolving symlinks.
+`EarthImportLimits.maximumVertices` defaults to 2,000,000. Supply the same limits
+to `EarthCaptureSession` and `EarthCaptureImporter` to capture and reopen a larger
+result. `maximumDecodedTextureBytes` defaults to 256 MiB. The example freezes
+Maximum Vertices and Maximum Textures (MiB) for each job, including automatic
+recovery and **Open Last Download**. This texture budget counts each imported
+material/placement's base-color RGBA storage, including repeated images; it is
+not a count of compressed downloads or a total process/GPU memory budget.
 
 Capture requests are serial and cancellable. `maximumSourceRequests` sets the
 positive per-attempt request budget (default 512), including metadata and GLBs;
-cached resource reuse does not consume another request. Other limits remain
-256 selected tile placements, 64 hierarchy levels, 16 MiB per response, and the
-configured node/total-byte budgets. Requests stay on Google's HTTPS 3D Tiles
+cached resource reuse does not consume another request. `maximumSelectedTiles`
+sets the positive placement budget (default 256); reusing a downloaded GLB still
+counts each selected placement. Interrupted-capture metadata records both chosen
+budgets and the vertex/decoded-texture budgets. Other limits remain 64 hierarchy levels, 16 MiB
+per response, and the configured node/total-byte budgets. Requests stay on Google's HTTPS 3D Tiles
 endpoint; redirects are refused. The ephemeral transport has no persistent cache
 and reports status errors without credential-bearing URLs. Rewritten local
 manifests retain selected transforms and bounds while removing service URLs,
@@ -239,6 +321,46 @@ keys, and sessions. Saving creates a new folder and removes its own incomplete
 save output after failure/cancellation; existing destinations are never replaced.
 Recovery checkpoints have separate retention: completed downloads survive both
 failure and cancellation without increasing request or import limits.
+
+**Inspect via API** uses a new Google session and consumes metadata requests. Planned request
+counts include unique JSON and GLB URLs, while selected-tile counts include reused
+placements. Geometry inspection downloads complete GLBs; it is not a zero-download
+check. It reads declared scene/accessor counts, accounts for repeated placements
+and generated flat normals, and reads embedded image headers. Estimates do not
+replace full import validation or guarantee peak memory usage. Geometry-buffer
+estimates cover prepared CPU vertices and indices; texture estimates cover
+base-level RGBA bytes, excluding mipmaps, decoder scratch space, and GPU copies.
+A complete precheck is retained in memory until selection changes or the app
+exits; its raw sources are also available through the recovery folder. Capturing
+from that snapshot does not start another Google session. See the [3D Tiles tile schema](https://github.com/CesiumGS/3d-tiles/blob/main/specification/schema/tile.schema.json)
+and [glTF accessors](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#accessors).
+
+## Offline estimates
+
+The automatic offline estimate makes **zero Google calls**. The example keeps
+up to 64 small measurement records from newly completed captures and complete API
+inspections, in its private Application Support `MessEarthKit/OfflineEstimates.json`.
+Records contain location, area/detail, measured counts/bytes, date, and whether
+geometry was decoded; they contain no keys, session URLs, or payloads. Partial or
+failed captures do not calibrate the estimate. An unreadable history file is
+preserved and reported; new measurements can still be used in the current session.
+
+Only the same detail error and centers within 2 km qualify. Counts and bytes
+scale by requested area, with one fixed placement/request retained, then broad
+0.5×–2× headroom is applied across matching observations. This is an uncalibrated
+heuristic, not a confidence interval or guaranteed bound. Tile edges, building
+density, texture reuse, and changing service content can put actual values
+outside the range. It intentionally avoids guessing across detail levels.
+No matching reference means **insufficient local data**, not an invented count.
+Existing source folders without recorded request/detail measurements are not
+automatically treated as calibration data.
+
+Hosts can retain `await session.lastObservation` after a successful capture or
+inspection and pass observations to `EarthCaptureOfflineEstimate(request:observations:)`.
+That calculation reads only supplied values and performs no I/O. The displayed
+vertex-buffer budget is computed from the configured cap; it is not a workload
+estimate. Offline projections never block capture. API inspection remains an
+explicit network action for more precise counts and full source reuse.
 
 ## Verify locally
 
@@ -260,12 +382,18 @@ the same triangle count and bounds. Its new destination is also the recovery
 folder; a failed capture leaves any published checkpoint there. JSON reports
 include `isPartial` and, when present, `incompleteReason`. Normal tests
 require no network or API key. Controlled source responses cover capture selection,
-session propagation, resource budgets, save/reload, and cancellation. Sixteen
+session propagation, resource budgets, save/reload, and cancellation. Eighteen
 tests include parameterized completion, default/custom request exhaustion,
-completion above 512 requests, cancellation, invalid request budgets, and
-decoder-limit cases that verify durable checkpoints, explicit incomplete status,
-and existing-folder protection. The original
-orientation fixture is shared by the probe,
+completion above 512 requests, tile exhaustion and completion above 256
+placements using one downloaded GLB, cancellation, invalid budgets, and
+aggregate vertex/texture-limit and offline raised-budget retry cases that verify
+durable checkpoints, explicit incomplete status, and existing-folder protection. Precheck
+coverage adds JSON-only budget stops, selection completeness, reused placements,
+flat-normal expansion, image-header estimates, offline reuse under revised vertex
+budgets, and cross-job cancellation/exclusion.
+Offline-estimator coverage checks insufficient references, local history roundtrip,
+same-detail/nearby filtering, monotonic area scaling, and no added source requests.
+The original orientation fixture is shared by the probe,
 tests, and app; its independently specified coordinate/texture contract and
 authoring script are documented in
 [`Tools/IntegrationProbe/Fixtures/Orientation/README.md`](Tools/IntegrationProbe/Fixtures/Orientation/README.md).

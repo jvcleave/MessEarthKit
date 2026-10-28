@@ -5,7 +5,7 @@ import simd
 /// and credentials never enter a complete or interrupted capture manifest.
 enum EarthCaptureManifest
 {
-    static func encode(request: EarthCaptureRequest, tiles: [EarthTileset.Tile], incompleteReason: String?, downloadedTiles: Int, sourceRequests: Int) throws -> Data
+    static func encode(request: EarthCaptureRequest, limits: EarthImportLimits, tiles: [EarthTileset.Tile], incompleteReason: String?, downloadedTiles: Int, sourceRequests: Int) throws -> Data
     {
         let center = simd_inverse(request.center.earthCenteredToLocal).columns.3
         let manifest = EarthTileset(
@@ -23,6 +23,9 @@ enum EarthCaptureManifest
             "downloadedTileCount": downloadedTiles,
             "sourceRequests": sourceRequests,
             "maximumSourceRequests": request.maximumSourceRequests,
+            "maximumSelectedTiles": request.maximumSelectedTiles,
+            "maximumVertices": limits.maximumVertices,
+            "maximumDecodedTextureBytes": limits.maximumDecodedTextureBytes,
             "requestedRegion": [
                 "latitude": request.center.latitude, "longitude": request.center.longitude,
                 "ellipsoidHeight": request.center.ellipsoidHeight,

@@ -24,13 +24,17 @@ final class EarthWorkspaceViewModel
     private(set) var captureDepth = "200"
     private(set) var detailError = "4"
     private(set) var maximumRequests = "512"
+    private(set) var maximumTiles = "256"
+    private(set) var maximumVertices = "2000000"
+    private(set) var maximumTexturesMiB = "256"
     private(set) var apiKey = ""
     private(set) var hasSavedCapture = false
     private(set) var hasRecoverableDownload = false
     private(set) var incompleteCaptureMessage: String?
+    private(set) var precheckDisplay: EarthCapturePrecheckDisplay?
+    private(set) var offlineEstimateDisplay: EarthOfflineEstimateDisplay?
 
     @ObservationIgnored private(set) var renderer: EarthPreviewRenderer?
-    @ObservationIgnored private let importer = EarthCaptureImporter()
     @ObservationIgnored private var importTask: Task<Void, Never>?
     @ObservationIgnored private var capture: EarthCapture?
     @ObservationIgnored private let locationLookup = EarthLocationLookup()
@@ -44,9 +48,12 @@ final class EarthWorkspaceViewModel
     @ObservationIgnored private let recoveryService = EarthCaptureRecoveryService()
     @ObservationIgnored private var recoveryRootURL: URL?
     @ObservationIgnored private var recoveryTask: Task<Void, Never>?
+    @ObservationIgnored private var precheckResult: EarthCapturePrecheck?
+    @ObservationIgnored private var estimateHistory = EarthCaptureObservationHistory(observations: [], note: nil)
 
     init()
     {
+        refreshOfflineEstimate()
         credentialTask = Task
         { [weak self, apiKeyStore] in
             defer { self?.credentialTask = nil }
@@ -66,14 +73,18 @@ final class EarthWorkspaceViewModel
         { [weak self, recoveryService] in
             defer { self?.recoveryTask = nil }
             let root = await recoveryService.mostRecentDownload()
-            guard let self, recoveryRootURL == nil else { return }
-            recoveryRootURL = root
-            hasRecoverableDownload = root != nil
+            let history = await recoveryService.estimateHistory()
+            guard let self else { return }
+            if recoveryRootURL == nil { recoveryRootURL = root }
+            hasRecoverableDownload = recoveryRootURL != nil
+            estimateHistory = history
+            refreshOfflineEstimate()
         }
     }
 
     var canResolveAddress: Bool { !isLoading && !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var canCapture: Bool { !isLoading && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !latitude.isEmpty && !longitude.isEmpty }
+    var canPrecheck: Bool { !isLoading && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !latitude.isEmpty && !longitude.isEmpty }
+    var canCapture: Bool { !isLoading && (!apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || precheckResult?.hasReusableSources == true) && !latitude.isEmpty && !longitude.isEmpty && precheckDisplay?.allowsCapture != false }
 
     func setAddress(_ value: String)
     {
@@ -82,19 +93,24 @@ final class EarthWorkspaceViewModel
         latitude = ""
         longitude = ""
         resolvedLocationTitle = nil
+        invalidatePrecheck()
     }
 
-    func setLatitude(_ value: String) { latitude = value; resolvedLocationTitle = nil }
-    func setLongitude(_ value: String) { longitude = value; resolvedLocationTitle = nil }
-    func setCaptureWidth(_ value: String) { captureWidth = value }
-    func setCaptureDepth(_ value: String) { captureDepth = value }
-    func setDetailError(_ value: String) { detailError = value }
-    func setMaximumRequests(_ value: String) { maximumRequests = value }
+    func setLatitude(_ value: String) { latitude = value; resolvedLocationTitle = nil; invalidatePrecheck() }
+    func setLongitude(_ value: String) { longitude = value; resolvedLocationTitle = nil; invalidatePrecheck() }
+    func setCaptureWidth(_ value: String) { captureWidth = value; invalidatePrecheck() }
+    func setCaptureDepth(_ value: String) { captureDepth = value; invalidatePrecheck() }
+    func setDetailError(_ value: String) { detailError = value; invalidatePrecheck() }
+    func setMaximumRequests(_ value: String) { maximumRequests = value; refreshPrecheckDisplay() }
+    func setMaximumTiles(_ value: String) { maximumTiles = value; refreshPrecheckDisplay() }
+    func setMaximumVertices(_ value: String) { maximumVertices = value; refreshPrecheckDisplay() }
+    func setMaximumTexturesMiB(_ value: String) { maximumTexturesMiB = value; refreshPrecheckDisplay() }
     func setAPIKey(_ value: String) { apiKey = value; didEditAPIKey = true }
 
     func resolveAddress()
     {
         guard canResolveAddress else { return }
+        invalidatePrecheck()
         activeJobID = UUID()
         isLoading = true
         errorMessage = nil
@@ -109,6 +125,7 @@ final class EarthWorkspaceViewModel
                 self?.latitude = String(format: "%.8f", location.latitude)
                 self?.longitude = String(format: "%.8f", location.longitude)
                 self?.resolvedLocationTitle = location.title
+                self?.refreshOfflineEstimate()
                 self?.status = location.title
             }
             catch is CancellationError { self?.status = "Lookup cancelled" }
@@ -122,25 +139,83 @@ final class EarthWorkspaceViewModel
         }
     }
 
+    func precheckRegion()
+    {
+        guard !isLoading else { return }
+        do
+        {
+            let request = try makeCaptureRequest()
+            let limits = try makeImportLimits()
+            let key = apiKey
+            let jobID = UUID()
+            activeJobID = jobID
+            isLoading = true
+            errorMessage = nil
+            invalidatePrecheck()
+            status = "Inspecting selection via API…"
+            importTask = Task
+            { [weak self, recoveryService] in
+                do
+                {
+                    let result = try await recoveryService.precheck(request: request, apiKey: key, limits: limits)
+                    { [weak self] progress in
+                        Task
+                        { @MainActor [weak self] in
+                            guard let self, activeJobID == jobID, isLoading else { return }
+                            status = "API inspection: \(progress.sourceRequests)/\(request.maximumSourceRequests) requests · \(progress.downloadedTiles) GLBs read"
+                        }
+                    }
+                    try Task.checkCancellation()
+                    guard self?.activeJobID == jobID else { throw CancellationError() }
+                    self?.precheckResult = result
+                    self?.refreshPrecheckDisplay()
+                }
+                catch is CancellationError { self?.status = "API inspection cancelled" }
+                catch
+                {
+                    self?.errorMessage = error.localizedDescription
+                    self?.status = "API inspection failed"
+                }
+                let root = await recoveryService.mostRecentDownload()
+                let history = await recoveryService.estimateHistory()
+                self?.estimateHistory = history
+                self?.refreshOfflineEstimate()
+                self?.recoveryRootURL = root
+                self?.hasRecoverableDownload = root != nil
+                self?.isLoading = false
+                self?.activeJobID = UUID()
+                self?.importTask = nil
+            }
+        }
+        catch { errorMessage = error.localizedDescription }
+    }
+
     func captureRegion()
     {
         guard !isLoading else { return }
         do
         {
-            guard let latitudeValue = Double(latitude), let longitudeValue = Double(longitude),
-                  let width = Double(captureWidth), let depth = Double(captureDepth), let error = Double(detailError)
-            else { throw EarthImportError.invalidContent("Enter valid coordinates, region dimensions, and detail error.") }
-            guard let requestLimit = Int(maximumRequests.trimmingCharacters(in: .whitespacesAndNewlines))
-            else { throw EarthImportError.invalidContent("Maximum Requests must be a positive whole number.") }
-            let origin = try EarthGeographicOrigin(latitude: latitudeValue, longitude: longitudeValue)
-            let request = try EarthCaptureRequest(center: origin, widthMeters: width, depthMeters: depth, maximumGeometricErrorMeters: error, maximumSourceRequests: requestLimit)
+            let request = try makeCaptureRequest()
+            let limits = try makeImportLimits()
+            if let precheckResult, precheckResult.matchesSelection(request)
+            {
+                guard precheckDisplay?.allowsCapture != false else { throw EarthImportError.limitExceeded("API inspection is incomplete or exceeds the current limits. Adjust limits and inspect again if needed.") }
+                if precheckResult.hasReusableSources
+                {
+                    let importer = EarthCaptureImporter(limits: limits)
+                    activeJobID = UUID()
+                    startLoad(title: resolvedLocationTitle ?? "Captured Region", accessURL: nil, refreshRecovery: true)
+                    { try await importer.importPrechecked(precheck: precheckResult) }
+                    return
+                }
+            }
             let recoveryService = recoveryService
             let key = apiKey
             let jobID = UUID()
             activeJobID = jobID
             startLoad(title: resolvedLocationTitle ?? "Captured Region", accessURL: nil, refreshRecovery: true)
             { [weak self] in
-                try await recoveryService.capture(request: request, apiKey: key)
+                try await recoveryService.capture(request: request, apiKey: key, limits: limits)
                 { [weak self] progress in
                     Task
                     { @MainActor [weak self] in
@@ -252,12 +327,70 @@ final class EarthWorkspaceViewModel
 
     private func load(fileURL: URL, accessURL: URL)
     {
-        activeJobID = UUID()
-        let importer = importer
-        startLoad(title: fileURL.deletingPathExtension().lastPathComponent, accessURL: accessURL)
+        guard !isLoading else { return }
+        do
         {
-            try await importer.importFile(fileURL: fileURL)
+            let importer = EarthCaptureImporter(limits: try makeImportLimits())
+            activeJobID = UUID()
+            startLoad(title: fileURL.deletingPathExtension().lastPathComponent, accessURL: accessURL)
+            {
+                try await importer.importFile(fileURL: fileURL)
+            }
         }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func invalidatePrecheck()
+    {
+        precheckResult = nil
+        precheckDisplay = nil
+        refreshOfflineEstimate()
+    }
+
+    private func refreshPrecheckDisplay()
+    {
+        refreshOfflineEstimate()
+        guard let precheckResult else { precheckDisplay = nil; return }
+        do
+        {
+            let request = try makeCaptureRequest()
+            guard precheckResult.matchesSelection(request) else { invalidatePrecheck(); status = "Selection changed; inspect again if needed"; return }
+            precheckDisplay = try EarthCapturePrecheckDisplay(precheck: precheckResult, request: request, limits: makeImportLimits())
+        }
+        catch { precheckDisplay = EarthCapturePrecheckDisplay(invalidLimits: error.localizedDescription) }
+        status = precheckDisplay?.allowsCapture == true ? "API inspection ready" : "API inspection needs attention"
+    }
+
+    private func refreshOfflineEstimate()
+    {
+        let width = Double(captureWidth)
+        let depth = Double(captureDepth)
+        let area = width.flatMap { width in depth.map { width * $0 } }
+        offlineEstimateDisplay = EarthOfflineEstimateDisplay(areaSquareMeters: area, limits: try? makeImportLimits(), request: try? makeCaptureRequest(), history: estimateHistory)
+    }
+
+    private func makeCaptureRequest() throws -> EarthCaptureRequest
+    {
+        guard let latitudeValue = Double(latitude), let longitudeValue = Double(longitude),
+              let width = Double(captureWidth), let depth = Double(captureDepth), let error = Double(detailError)
+        else { throw EarthImportError.invalidContent("Enter valid coordinates, region dimensions, and detail error.") }
+        guard let requestLimit = Int(maximumRequests.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { throw EarthImportError.invalidContent("Maximum Requests must be a positive whole number.") }
+        guard let tileLimit = Int(maximumTiles.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { throw EarthImportError.invalidContent("Maximum Tiles must be a positive whole number.") }
+        return try EarthCaptureRequest(center: EarthGeographicOrigin(latitude: latitudeValue, longitude: longitudeValue), widthMeters: width, depthMeters: depth, maximumGeometricErrorMeters: error, maximumSourceRequests: requestLimit, maximumSelectedTiles: tileLimit)
+    }
+
+    private func makeImportLimits() throws -> EarthImportLimits
+    {
+        guard let vertexLimit = Int(maximumVertices.trimmingCharacters(in: .whitespacesAndNewlines)),
+              vertexLimit > 0, vertexLimit <= Int(UInt32.max) / 3
+        else { throw EarthImportError.invalidContent("Maximum Vertices must be a positive whole number no greater than \(Int(UInt32.max) / 3).") }
+        let maximumMiB = Int.max / (1024 * 1024)
+        guard let textureMiB = Int(maximumTexturesMiB.trimmingCharacters(in: .whitespacesAndNewlines)),
+              textureMiB > 0, textureMiB <= maximumMiB
+        else { throw EarthImportError.invalidContent("Maximum Textures (MiB) must be a positive whole number no greater than \(maximumMiB).") }
+        return EarthImportLimits(maximumVertices: vertexLimit, maximumDecodedTextureBytes: textureMiB * 1024 * 1024)
     }
 
     private func startLoad(
@@ -332,6 +465,9 @@ final class EarthWorkspaceViewModel
             if refreshRecovery
             {
                 let root = await recoveryService.mostRecentDownload()
+                let history = await recoveryService.estimateHistory()
+                self?.estimateHistory = history
+                self?.refreshOfflineEstimate()
                 self?.recoveryRootURL = root
                 self?.hasRecoverableDownload = root != nil
             }

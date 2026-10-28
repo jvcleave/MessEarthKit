@@ -3,7 +3,7 @@ import SwiftUI
 struct EarthCaptureCostView: View
 {
     // Global Photorealistic 3D Tiles list rate, verified October 28, 2026.
-    // EarthCaptureSession starts one root session per capture attempt.
+    // Precheck and uncached capture each start one root session.
     private let standardSessionPriceUSD = Decimal(6) / 1000
     private let pricingURL = URL(string: "https://developers.google.com/maps/billing-and-pricing/pricing")!
 
@@ -15,7 +15,7 @@ struct EarthCaptureCostView: View
             {
                 Label
                 {
-                    Text("Estimated API cost: \(standardSessionPriceUSD, format: .currency(code: "USD").precision(.fractionLength(3))) USD per capture")
+                    Text("Estimated API cost: \(standardSessionPriceUSD, format: .currency(code: "USD").precision(.fractionLength(3))) USD per new Google session")
                 } icon: {
                     Image(systemName: "dollarsign.circle")
                 }
@@ -25,7 +25,7 @@ struct EarthCaptureCostView: View
                     .font(.caption)
             }
             Text("$0 when your billing account's shared 1,000/month free allowance remains. This app can't check that balance.")
-            Text("One new Google session per attempt. Additional tiles and opening or saving local captures add no session charge.")
+            Text("Offline estimates make no Google calls. Inspect via API starts a session. Capture reuses a completed inspection; otherwise it starts a new session.")
             Text("Global USD list rate before taxes or account discounts · Checked October 28, 2026")
         }
         .font(.caption)

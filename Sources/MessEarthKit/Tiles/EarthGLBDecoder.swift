@@ -22,7 +22,7 @@ struct EarthGLBDecoder
         transform: simd_double4x4
     ) throws -> EarthGLBPart
     {
-        try preflight(data: data)
+        _ = try preflight(data: data)
         EarthInstallDracoDecoder()
         let asset: GLTFAsset
         do
@@ -63,7 +63,7 @@ struct EarthGLBDecoder
         return part
     }
 
-    private func preflight(data: Data) throws
+    func preflight(data: Data, enforcesVertexBudget: Bool = true) throws -> [String: Any]
     {
         guard data.count >= 20, data.count <= limits.maximumSourceBytes
         else { throw EarthImportError.invalidContent("GLB header or file size is invalid.") }
@@ -118,9 +118,11 @@ struct EarthGLBDecoder
         guard primitiveCount <= limits.maximumNodes else { throw EarthImportError.limitExceeded("GLB primitive count.") }
         for accessor in json["accessors"] as? [[String: Any]] ?? []
         {
-            guard let count = accessor["count"] as? Int, count > 0, count <= limits.maximumVertices * 3
+            guard let count = accessor["count"] as? Int, count > 0,
+                  count <= (enforcesVertexBudget ? limits.maximumVertices * 3 : Int(UInt32.max))
             else { throw EarthImportError.limitExceeded("GLB accessor element count.") }
         }
+        return json
     }
 
     private func appendNode(

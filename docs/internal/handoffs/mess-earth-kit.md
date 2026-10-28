@@ -18,6 +18,192 @@ and placement. Neither app is a dependency of the package.
 
 ## Current Bounded Milestone
 
+Current authorization: commit the current version, then implement automatic
+model sections as discussed. Checkpoint the existing Earth SDK/example,
+MessScene import/options work, and workspace integration independently, excluding
+concurrent model-reset/camera edits. Scope is only our existing work; no unrelated
+submodule revisions or new API calls. Apply scoped commit-time formatting and
+verify the affected components. Then implement automatic tile-based collections
+with a shared origin, durable source-folder saving and independent section
+import, simpler area/detail controls, and internal resource budgets. Scene-wide
+streaming/loading policy is deferred. Record the implementation plan and exact
+verification gate in the cross-repository sectioning handoff after this checkpoint.
+
+Completed: user clarified estimates must precede all Google calls. Add an
+automatic offline projection, distinct from the network inspection. Use bounded
+local measurement history from complete captures/inspections at the same detail
+and nearby location; scale by area with explicitly heuristic, broad ranges.
+Cold start has no invented workload counts: show area/configured vertex-buffer
+budget and explain that a local calibration is needed. Offline ranges never
+block capture. Rename the network button to Inspect via API. Persist only small
+sanitized measurement records (no credentials/URLs or raw source payloads),
+preserve existing work, and keep measurements on the owning worker. Done: pure
+estimator tests prove cold start, similarity filtering and monotonic scaling;
+existing capture/precheck coverage still passes; the example builds. No live API
+calls, GUI launch, commits or unrelated edits. Prior API precheck remains useful
+as an explicit inspection and reuses downloaded bytes for capture.
+
+Steering: user also reached the aggregate decoded-texture budget (default
+256 MiB). Expose Maximum Textures (MiB) next to the vertex limit, snapshot it for
+capture, inspection, recovery, and file reopen, and retain it in partial metadata.
+Report the measured next-texture byte total and configured cap. Extend the shared
+recovery fixture with aggregate texture exhaustion and offline raised-limit retry.
+This is part of the same bounded estimate/budget milestone; no live requests.
+
+Implementation stage: `EarthCaptureObservation` records only complete capture or
+complete inspection counts; pure `EarthCaptureOfflineEstimate` uses up to 64
+same-detail references within 2 km and rough area-scaled 0.5x–2x ranges. The
+example's worker owns a bounded local JSON history, and its view model refreshes
+cached typed offline rows at startup, on input edits, and after source jobs.
+Cold start explicitly reports insufficient references and shows area/budgets;
+no network key is needed and projections never gate capture. API action is now
+named Inspect via API; API-based results retain exact-limit comparisons.
+Maximum Textures (MiB) defaults to 256 and all job/reopen paths share its immutable
+limits. Partial metadata records the texture budget; the aggregate error names
+the next-texture total and cap. Focused verification passed: the new offline
+reference/filter/scale/roundtrip test and all nine recovery cases, including a
+16-byte texture cap failing on two 2x2 RGBA placements and offline success at 32.
+README now documents both estimate paths, local history, and texture retries.
+The affected macOS example Debug build passed with no compiler output. Scoped
+source/doc review and whitespace checks passed. Existing precheck cases passed
+after observation API additions; focused offline/recovery checks cover the
+subsequent texture-budget change. No live API request or test infrastructure was
+introduced. Retained tests exercise separate risks: cold start, same-detail and
+distance eligibility, monotonic area scaling, measurement serialization without
+credentials, no projection I/O, aggregate texture enforcement, and offline retry
+with a revised budget. The bounded milestone is complete and remains uncommitted.
+
+Completed: add an estimate/precheck to the SDK and example. Reuse the capture
+selector so area/detail/refinement rules stay identical. Stage 1 traverses only
+JSON and reports selected placements and unique payload requests against budgets;
+stop before GLBs when known counts exceed them. Stage 2 reads bounded GLBs and
+estimates declared vertices/indices and texture/buffer bytes without constructing
+decoded meshes or GPU resources. Completed source snapshots are reusable for
+Capture and durable recovery, so a successful precheck does not redownload data.
+Unknown/incomplete estimates remain explicit. The UI owns job cancellation,
+cached typed report rows, budget comparisons, and invalidation on selection edits.
+Preserve the streaming capture/recovery path. Done: focused fixture tests prove
+count/placement parity, budget early stopping, geometry estimates and reuse,
+cancellation/error handling, and the affected example build passes. No live API
+requests, GUI launch, commits, or unrelated repository edits are needed.
+
+Implementation stage: SDK `precheck` shares the original selector and preserves
+the streaming capture path. Geometry estimation reuses GLB preflight validation,
+walks the declared default scene, handles repeated placements/flat normals, and
+reads embedded image headers without native decoding. Raw source snapshots are
+sanitized, checkpointed, and reusable through `importPrechecked`. The example
+has a Precheck Region action, cached typed rows, selection invalidation, live
+budget comparisons, capture blocking for known excess, and source reuse without
+a new root session. Cost copy distinguishes precheck sessions and cached capture.
+The original eight recovery cases pass after the shared selector changes.
+New focused coverage uses the existing orientation fixture: normal/flat-normal
+estimate-to-import parity and revised vertex budget reuse; tile/request stops
+before GLBs; incomplete metadata counts; cross-job exclusion/cancellation. The
+flat-normal fixture is an in-memory edit of that existing asset, needed because
+generated normals change prepared vertex counts independently of POSITION counts.
+Next run the package suite for shared GLB preflight compatibility, then the
+affected macOS example build and scoped review. The first package suite passed
+16 tests; the new flat-normal precheck case failed in native image MIME handling
+after its in-memory JSON rewrite. Its serialization now uses withoutEscapingSlashes,
+matching the original asset and existing fixture rewrite. Rerun focused precheck
+coverage to verify that correction. Confirmed: all five focused precheck cases
+pass with the corrected fixture. Review consolidated source download/checkpoint
+handling so capture and precheck cannot drift; selection stays shared too. The
+display owner now verifies selection identity again when applying a result.
+README describes the precheck workflow, limits, byte reuse, memory scope, and API.
+Next rerun the component suite after that shared-source change, then build the
+example. No live requests or unrelated consumer builds are needed.
+Final component gate passed: all 17 package tests, including the five new
+precheck cases, both cancellation modes, and all eight recovery cases. The
+fixture serialization correction is verified and the shared GLB validator stays
+compatible with the existing compressed and orientation assets. The display's
+status now follows live budget comparisons. The macOS example Debug build also
+passed with no compiler output. Scoped source and whitespace review passed,
+including the three new Swift files. Review confined selection-identity assertions
+to one representative precheck case; all five focused cases passed again after
+this pruning. The bounded milestone is complete and remains uncommitted.
+Retained coverage detects distinct risks: count/decode parity including generated
+normals, unique downloads versus placements, request/tile budget early stopping,
+incomplete lower bounds, durable sanitized reuse, revised import limits, and
+cross-job cancellation/exclusion. No new test infrastructure or fixture files.
+An additional shared-scheme XML reserialization appeared during verification
+(formatting and an empty Testables element); no implementation edit was made to
+that file, and it is preserved. Earlier import/workspace edits remain intact.
+
+Completed: expose Maximum Vertices in the example, default 2,000,000, and
+freeze the chosen `EarthImportLimits` for capture, automatic recovery, and all
+local/recovery reopen actions. Validate before starting a job. Replace the two
+fixed default importers so retrying a saved download honors the current setting.
+Improve the aggregate-limit error with the limit and next-tile vertex total;
+retain the chosen vertex budget in partial metadata. Done: extend the existing
+recovery fixture with a real aggregate vertex failure and offline retry using a
+raised budget, run focused tests and the example build, and review scoped diffs.
+Also answer the user's estimation question: tileset traversal can discover tile
+placements and planned payload requests, while vertices require GLB metadata
+and memory depends on decoded geometry/image dimensions. A preflight feature is
+not implemented by this bounded control change. No live API calls or commits.
+
+Implementation stage: the view model validates a positive supported vertex
+budget before each job and creates immutable job-specific limits. Capture and
+its automatic recovery share those limits; local/recovery reopen constructs a
+new importer from the current setting. The SDK's aggregate-limit error now names
+the next-tile total and budget, and partial metadata records `maximumVertices`.
+The existing decoder-limit recovery case now uses two independently specified
+28-vertex fixture placements: a 28-vertex aggregate cap fails, and a 56-vertex
+offline reopen succeeds without changing the downloaded sources. No new tests
+or fixtures were added. README documents the control, retry path, and the
+difference between possible preflight counts and GLB-dependent estimates.
+Focused recovery verification passed: all eight cases, including aggregate
+vertex failure with the correct measured count and offline reopen at the raised
+budget. Existing request/tile/cancellation behavior still passes in that shared
+coverage. The affected macOS example Debug build passed with no compiler output;
+scoped source review and `git diff --check` passed. The bounded milestone is
+complete and changes remain uncommitted. No tests need to be broadened without
+a new failure or unresolved concern.
+
+Completed: make the selected-tile cap configurable through the example's
+capture controls and immutable `EarthCaptureRequest`. Keep the existing 256
+default, require a positive whole number, enforce it per selected placement,
+and retain it in interrupted-capture metadata. Done: a small configured cap
+stops and preserves completed placements; a raised cap completes above 256;
+focused fixture tests and the macOS example build pass. Preserve all earlier
+uncommitted import/workspace work. No live API calls or commits are authorized.
+Public request consumers are the example, probe, and package tests; no
+MessScene/MESS source currently constructs capture requests. Implementation is
+in place: the request validates `maximumSelectedTiles`, traversal reads it,
+the example owns the Maximum Tiles field, errors name the chosen budget and
+remedy, and incomplete manifests retain it. Existing recovery fixture coverage
+adds exhaustion at one of two placements and successful completion at 257;
+both cases reuse one GLB download to distinguish placement and request budgets.
+Existing nonpositive-budget coverage now includes the new setting. Focused
+verification passed: two tests with eight recovery cases and two invalid-budget
+cases, using the required centralized scratch path. Scoped implementation/doc
+review and `git diff --check` pass. The affected MessEarthKitExample macOS Debug
+build passed with no compiler output. The bounded milestone is complete, and
+changes remain uncommitted. Retained coverage detects placement-versus-download
+counting, enforcement of custom lower/raised caps, durable partial metadata, and
+rejection of nonpositive budgets; no new fixture or test infrastructure was added.
+
+Completed: add MessScene's MODELS / EARTH CAPTURES source-folder import.
+The cross-repository checkpoint is
+`../docs/internal/handoffs/earth-capture-model-import.md` relative to this
+repository root. The package now exposes its existing immutable source-file
+import and a public EarthSourceFile initializer; MessScene supplies bytes through
+its own file-access layer. No decoder implementation or capture/network changes.
+Only the example, probe, tests, and new MessScene importer consume these APIs.
+All 16 package tests, the example build, and the affected MessScene macOS build
+passed. The MessScene build passed again after an unrelated transient merge was
+cleared, and the Earth changes remain intact. No new test infrastructure was added.
+The consumer owns native material/geometry adaptation, storage, and partial UI.
+No implementation commits/pushes are authorized for this new milestone.
+
+Workspace follow-up: MESS.xcworkspace now includes both the shared Earth package
+and its example project. Both app schemes build there. README instructions now
+use that one workspace for combined development. After the user approved Xcode
+MCP access, the workspace reopened, both app schemes appeared, and MessSceneApp
+built in the IDE with no errors. The original MessApp/My Mac selection was
+restored. No app was launched.
+
 Checkpoint: the user authorized committing and pushing all current MessEarthKit
 work. Scope includes the root package, example Xcode app, fixture/test/probe tools,
 and current documentation. The remote was fetched and matches the planning
@@ -184,7 +370,7 @@ that already-open project. No GUI was launched during verification.
 - Default area is 200 x 200 m and maximum geometric error is 4 m. Whole tiles
   may extend beyond the region. Selection uses explicit ADD/REPLACE refinement.
 - Downloads are serial and bounded: configurable positive request budget (default
-  512), 256 placements, depth 64,
+  512) and selected-placement budget (default 256), depth 64,
   16 MiB per response, plus configured source/node/geometry/texture limits.
 - Native Draco decoding has a fixed 2M-point/2M-face ceiling; the Swift adapter
   additionally enforces caller limits. GLTFKit2's stateless plugin is installed
@@ -326,31 +512,34 @@ that already-open project. No GUI was launched during verification.
 
 ## Remaining Issues
 
-The real capture/save/reopen path is verified. GUI interactions and actual
-preview texture appearance still need user inspection. The final GLB/USDZ
-consumer format and MessScene import remain deferred. Meshopt, sparse accessors,
+The earlier real capture/save/reopen path is verified. This precheck milestone
+uses offline fixtures; its live API and GUI interactions still need user inspection.
+Memory estimates are prepared CPU geometry/base RGBA bytes, not peak allocation.
+Standalone GLB/USDZ delivery remains deferred; MessScene uses source-folder import.
+Meshopt, sparse accessors,
 animation/skinning, extra material maps, implicit/legacy tile containers, and
 external GLB resource URLs remain unsupported. Lit preview uses directional
 shading rather than full PBR. Transient Google HTTP 429s may still occur.
 
 ## Next Exact Action
 
-The capture repair, cost display, durable recovery, and settable request-budget
-milestones are complete. The user should rebuild/run **MessEarthKitExample** and
-set **Maximum Requests** beside Detail error; default 512, positive whole number.
-Progress now shows requests used/allowed. Future interrupted captures
-retain completed tiles and offer **Open Last Download** / **Show Downloads**;
-the app previews decodable partial results with a visible warning. The older
-failed attempt was never saved and cannot be recovered. **Open Tileset Folder…**
-can still open the earlier saved Cincinnati capture without a new API request.
-The existing default 200 x 200 m and 4 m settings support the verified live capture.
+Rebuild/run **MessEarthKitExample**. Increase **Maximum Textures (MiB)** and use
+**Open Last Download** to retry existing sources. Default is 256 MiB; the vertex,
+tile, and request defaults remain 2,000,000, 256, and 512. All are independent
+budgets and apply to their existing job paths.
 
-Next independent milestone: validate the actual GUI preview/interaction and
-source appearance, then resume the deferred consumer-delivery decision when
-requested. Do not launch the GUI without a new explicit request, change the
-100/day quota, or begin MessScene integration on this checkpoint's authority.
-The current commit/push checkpoint is explicitly authorized; later commits need
-their own task authorization.
+**Offline estimate** updates before Google requests. Matching local observations
+produce broad workload ranges; no match means insufficient local data, with
+area and configured buffer budgets shown. Only newly completed captures or
+complete API inspections record calibration; older source folders lacking request
+measurements are not assumed to be valid references.
+
+**Inspect via API** is the optional network action for precise selection/count
+inspection. It starts a Google session and can download GLBs; **Capture Region**
+reuses complete inspection sources without another session/download. Offline
+projections never block capture. No implementation commits/pushes, live API
+calls, cloud changes, GUI launch, or unrelated integration work are authorized
+by this bounded milestone. Stop here until the user requests more work.
 
 **Fresh-task startup:** Read this handoff, inspect owning-repository `git status`
 and scoped diffs, then follow **Next Exact Action** and the listed sources.

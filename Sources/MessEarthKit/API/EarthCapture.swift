@@ -74,6 +74,12 @@ public struct EarthSourceFile: Sendable
 {
     public let relativePath: String
     public let data: Data
+
+    public init(relativePath: String, data: Data)
+    {
+        self.relativePath = relativePath
+        self.data = data
+    }
 }
 
 public struct EarthCapture: Sendable

@@ -17,7 +17,18 @@ public actor EarthCaptureImporter
         try importSource(fileURL: fileURL, suppliedFiles: nil)
     }
 
-    func importSourceFiles(sourceFiles: [EarthSourceFile], rootSourcePath: String) throws -> EarthCapture
+    /// Reuses completed precheck downloads without another Google session or
+    /// request. The current import limits and full decoder validation still apply.
+    public func importPrechecked(precheck: EarthCapturePrecheck) throws -> EarthCapture
+    {
+        guard precheck.hasReusableSources else { throw EarthImportError.invalidContent("Precheck has no complete source snapshot. Run Precheck again after adjusting the limits.") }
+        return try importSourceFiles(sourceFiles: precheck.sourceFiles, rootSourcePath: "tileset.json")
+    }
+
+    /// Imports host-supplied immutable bytes without opening their source files.
+    /// The host owns file authorization and loading; relative references and all
+    /// ordinary decoding limits are validated by this importer.
+    public func importSourceFiles(sourceFiles: [EarthSourceFile], rootSourcePath: String) throws -> EarthCapture
     {
         let root = URL(fileURLWithPath: "/MessEarthCapture")
         var files: [URL: Data] = [:]
@@ -155,7 +166,7 @@ public actor EarthCaptureImporter
         let part = try autoreleasepool { try EarthGLBDecoder(limits: limits).decode(data: data, transform: transform) }
         let addedVertices = part.meshes.reduce(0) { $0 + $1.vertices.count }
         guard addedVertices <= limits.maximumVertices - assembly.vertexCount
-        else { throw EarthImportError.limitExceeded("Capture vertex count.") }
+        else { throw EarthImportError.limitExceeded("Capture vertex count would reach \(assembly.vertexCount + addedVertices) (limit \(limits.maximumVertices)). Increase Maximum Vertices or reduce the area or detail.") }
         var addedTextureBytes = 0
         for material in part.materials
         {
@@ -163,7 +174,7 @@ public actor EarthCaptureImporter
             {
                 let bytes = texture.width * texture.height * 4
                 guard bytes <= limits.maximumDecodedTextureBytes - assembly.textureBytes - addedTextureBytes
-                else { throw EarthImportError.limitExceeded("Capture decoded texture bytes.") }
+                else { throw EarthImportError.limitExceeded("Capture decoded texture bytes would reach \(assembly.textureBytes + addedTextureBytes + bytes) (limit \(limits.maximumDecodedTextureBytes) bytes). Increase Maximum Textures (MiB) or reduce the area or detail.") }
                 addedTextureBytes += bytes
             }
         }

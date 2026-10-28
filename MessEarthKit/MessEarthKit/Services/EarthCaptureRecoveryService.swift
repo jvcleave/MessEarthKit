@@ -7,27 +7,47 @@ actor EarthCaptureRecoveryService
 {
     private let baseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
         .appendingPathComponent("MessEarthKit/Recoveries", isDirectory: true)
-    private let importer = EarthCaptureImporter()
     private var attemptedDirectory: URL?
+    private let estimateStore = EarthCaptureEstimateStore()
 
-    func capture(request: EarthCaptureRequest, apiKey: String, progress: @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthCapture
+    func capture(request: EarthCaptureRequest, apiKey: String, limits: EarthImportLimits, progress: @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthCapture
+    {
+        let directory = try newRecoveryDirectory()
+        let session = EarthCaptureSession(apiKey: apiKey, limits: limits)
+        do
+        {
+            let capture = try await session.capture(request: request, recoveryDirectoryURL: directory, progress: progress)
+            if let observation = await session.lastObservation { _ = await estimateStore.record(observation) }
+            return capture
+        }
+        catch
+        {
+            let originalError = error
+            guard !Task.isCancelled, let root = publishedRoot(directory: directory) else { throw originalError }
+            do { return try await EarthCaptureImporter(limits: limits).importFile(fileURL: root) }
+            catch { throw originalError } // Raw files remain available if preview decoding also fails.
+        }
+    }
+
+    func precheck(request: EarthCaptureRequest, apiKey: String, limits: EarthImportLimits, progress: @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthCapturePrecheck
+    {
+        let directory = try newRecoveryDirectory()
+        let session = EarthCaptureSession(apiKey: apiKey, limits: limits)
+        let result = try await session.precheck(request: request, recoveryDirectoryURL: directory, progress: progress)
+        if let observation = await session.lastObservation { _ = await estimateStore.record(observation) }
+        return result
+    }
+
+    func estimateHistory() async -> EarthCaptureObservationHistory { await estimateStore.load() }
+
+    private func newRecoveryDirectory() throws -> URL
     {
         guard let baseURL else { throw EarthImportError.inaccessibleSource("The application support folder is unavailable.") }
         do { try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true) }
         catch { throw EarthImportError.inaccessibleSource("Could not create the download recovery folder.") }
         let directory = baseURL.appendingPathComponent("Capture-\(UUID().uuidString)", isDirectory: true)
         attemptedDirectory = directory
-        do
-        {
-            return try await EarthCaptureSession(apiKey: apiKey).capture(request: request, recoveryDirectoryURL: directory, progress: progress)
-        }
-        catch
-        {
-            let originalError = error
-            guard !Task.isCancelled, let root = publishedRoot(directory: directory) else { throw originalError }
-            do { return try await importer.importFile(fileURL: root) }
-            catch { throw originalError } // Raw files remain available if preview decoding also fails.
-        }
+        return directory
     }
 
     func mostRecentDownload() -> URL?
