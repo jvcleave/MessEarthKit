@@ -19,6 +19,7 @@
     {
         return nil;
     }
+    if (EarthInspectDracoTopology(source, view.offset, view.length, 2000000, 2000000) != 0) { return nil; }
     draco::DecoderBuffer buffer;
     buffer.Init(static_cast<const char *>(source.bytes) + view.offset, view.length);
     draco::Decoder decoder;

@@ -22,7 +22,8 @@ struct EarthGLBDecoder
         transform: simd_double4x4
     ) throws -> EarthGLBPart
     {
-        _ = try preflight(data: data)
+        let json = try preflight(data: data)
+        try EarthDracoAdmission.validate(data: data, json: json)
         EarthInstallDracoDecoder()
         let asset: GLTFAsset
         do

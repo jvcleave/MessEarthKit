@@ -7,6 +7,43 @@ private let fixtureDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
     .appendingPathComponent("Tools/IntegrationProbe/Fixtures/Orientation")
 
+@Test(arguments: [false, true])
+func automaticSectionsPreserveAlignmentAndSaveIndependentSources(textureBudget: Bool) async throws
+{
+    let limits = textureBudget ? EarthImportLimits(maximumDecodedTextureBytes: 16) : EarthImportLimits(maximumVertices: 28)
+    let importer = EarthCaptureImporter(limits: limits)
+    let collection = try await importer.prepareCollection(fileURL: fixtureDirectory.appendingPathComponent("tileset.json"))
+    #expect(collection.sections.count == 2)
+    var minimum = SIMD3<Float>(repeating: .infinity)
+    var maximum = SIMD3<Float>(repeating: -.infinity)
+    let original = try Data(contentsOf: fixtureDirectory.appendingPathComponent("block.glb"))
+    for section in collection.sections
+    {
+        let capture = try await importer.importSection(section)
+        #expect(capture.vertexCount == 28 && capture.triangleCount == 14)
+        #expect(capture.geographicOrigin?.latitude == collection.geographicOrigin.latitude)
+        #expect(section.sourceFiles.first { $0.relativePath.hasSuffix(".glb") }?.data == original)
+        minimum = simd_min(minimum, capture.bounds.minimum)
+        maximum = simd_max(maximum, capture.bounds.maximum)
+    }
+    // Independent fixture contract: splitting must preserve placement, all
+    // leaf geometry, and the original 56-vertex/28-triangle result.
+    #expect(simd_distance(minimum, SIMD3(-4, 0.5, -7)) < 0.001)
+    #expect(simd_distance(maximum, SIMD3(10, 2.3, -1)) < 0.001)
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let last = try #require(collection.sections.last)
+    let selected = try collection.selecting([last.id])
+    let expected = try await importer.importSection(last)
+    let root = try await EarthCaptureStore().save(collection: selected, directoryURL: directory)
+    let reopened = try await importer.prepareCollection(fileURL: root)
+    let restored = try await importer.importSection(#require(reopened.sections.first))
+    #expect(restored.bounds.minimum == expected.bounds.minimum && restored.bounds.maximum == expected.bounds.maximum)
+    let standaloneRoot = directory.appendingPathComponent("models/model-\(last.id)/tileset.json")
+    let standalone = try await importer.importFile(fileURL: standaloneRoot)
+    #expect(standalone.bounds.minimum == expected.bounds.minimum)
+}
+
 @Test func tiledReferencePreservesPlacementRefinementAndSourceBytes() async throws
 {
     let capture = try await EarthCaptureImporter().importFile(fileURL: fixtureDirectory.appendingPathComponent("tileset.json"))
@@ -20,6 +57,22 @@ private let fixtureDirectory = URL(fileURLWithPath: #filePath)
     let original = try Data(contentsOf: fixtureDirectory.appendingPathComponent("block.glb"))
     #expect(capture.sourceFiles.first { $0.relativePath == "block.glb" }?.data == original)
     #expect(Set(capture.sourceFiles.map(\.relativePath)) == ["tileset.json", "nested.json", "block.glb"])
+}
+
+@Test func declaredSharedOriginMetadataCannotSilentlyFallBackToBounds() async throws
+{
+    let importer = EarthCaptureImporter()
+    let collection = try await importer.prepareCollection(fileURL: fixtureDirectory.appendingPathComponent("tileset.json"))
+    let files = try collection.sourceFiles()
+    let root = try #require(files.first { $0.relativePath == "tileset.json" })
+    var json = try #require(JSONSerialization.jsonObject(with: root.data) as? [String: Any])
+    var extras = try #require(json["extras"] as? [String: Any])
+    extras["messEarthKitSharedOrigin"] = ["latitude": "invalid", "longitude": 0, "ellipsoidHeight": 0]
+    json["extras"] = extras
+    let invalidRoot = EarthSourceFile(relativePath: root.relativePath, data: try JSONSerialization.data(withJSONObject: json))
+    let changed = files.map { $0.relativePath == root.relativePath ? invalidRoot : $0 }
+    await #expect(throws: EarthImportError.self)
+    { try await importer.importSourceFiles(sourceFiles: changed, rootSourcePath: root.relativePath) }
 }
 
 @Test func standaloneGLBRetainsNodeTransformsUVsAndUnlitImage() async throws

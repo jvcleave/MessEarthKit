@@ -95,6 +95,9 @@ public struct EarthCapture: Sendable
     /// Non-nil for an interrupted capture. The selected source files remain
     /// usable, but do not represent the complete requested region.
     public let incompleteReason: String?
+    /// Recorded preparation permission, when the artifact includes it. An
+    /// optimized-copy policy permits appearance changes on subdivided textures.
+    public let preparationProfile: EarthPreparationProfile?
 
     public var vertexCount: Int { meshes.reduce(0) { $0 + $1.vertices.count } }
     public var triangleCount: Int { meshes.reduce(0) { $0 + $1.triangleIndices.count / 3 } }

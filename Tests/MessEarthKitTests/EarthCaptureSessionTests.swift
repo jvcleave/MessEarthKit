@@ -277,7 +277,7 @@ private func precheckCountsSelectionAndReusesSources(scenario: PrecheckCase) asy
     }
 }
 
-private func precheckFixtureResources(flatNormals: Bool) throws -> [String: Data]
+func precheckFixtureResources(flatNormals: Bool) throws -> [String: Data]
 {
     var glb = try Data(contentsOf: referenceDirectory.appendingPathComponent("block.glb"))
     if flatNormals
@@ -468,7 +468,8 @@ private func completedDownloadsSurviveInterruptedCaptures(interruption: Recovery
     #expect(recovered.sourceFiles.first { $0.relativePath.hasSuffix(".glb") }?.data == original)
     let manifest = try String(contentsOf: rootFile, encoding: .utf8)
     #expect(!manifest.contains("fixture-key") && !manifest.contains("fixture-session") && !manifest.contains("https://"))
-    if completes { #expect(recovered.incompleteReason == nil) }
+    let sourceDownloadCompletes = completes || interruption == .decodeLimit || interruption == .textureLimit
+    if sourceDownloadCompletes { #expect(recovered.incompleteReason == nil) }
     else { #expect(recovered.incompleteReason != nil) }
     if interruption == .raisedRequestLimit
     {
@@ -477,16 +478,22 @@ private func completedDownloadsSurviveInterruptedCaptures(interruption: Recovery
     if interruption == .decodeLimit
     {
         #expect(recovered.vertexCount == 56)
-        let extras = try #require((JSONSerialization.jsonObject(with: Data(manifest.utf8)) as? [String: Any])?["extras"] as? [String: Any])
-        let marker = try #require(extras["messEarthKitIncompleteCapture"] as? [String: Any])
-        #expect(marker["maximumVertices"] as? Int == 28)
     }
     if interruption == .textureLimit
     {
         #expect(recovered.materials.compactMap(\.baseColorTexture).count == 2)
-        let extras = try #require((JSONSerialization.jsonObject(with: Data(manifest.utf8)) as? [String: Any])?["extras"] as? [String: Any])
-        let marker = try #require(extras["messEarthKitIncompleteCapture"] as? [String: Any])
-        #expect(marker["maximumDecodedTextureBytes"] as? Int == 16)
+    }
+    if interruption == .decodeLimit || interruption == .textureLimit
+    {
+        // A failed whole-capture preview must still allow complete offline
+        // models using the original smaller per-model vertex/texture budgets.
+        let models = try await EarthCaptureImporter(limits: limits).prepareCollection(fileURL: rootFile)
+        #expect(models.incompleteReason == nil && models.sections.count == 2)
+        for section in models.sections
+        {
+            let model = try await EarthCaptureImporter(limits: limits).importSection(section)
+            #expect(model.incompleteReason == nil)
+        }
         #expect(await session.lastObservation == nil)
     }
     if interruption == .smallTileLimit || interruption == .raisedTileLimit

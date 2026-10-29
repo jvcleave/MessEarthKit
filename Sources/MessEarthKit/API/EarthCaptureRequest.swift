@@ -50,6 +50,7 @@ public enum EarthCaptureError: Error, LocalizedError, Sendable
     case missingAPIKey
     case alreadyCapturing
     case authenticationRejected
+    case serviceRejected(reason: EarthServiceRejection, statusCode: Int)
     case requestFailed(Int?)
     case noCoverage
     case detailUnavailable
@@ -61,10 +62,31 @@ public enum EarthCaptureError: Error, LocalizedError, Sendable
             case .missingAPIKey: "Enter a Google Maps Tile API key."
             case .alreadyCapturing: "A capture is already running."
             case .authenticationRejected: "Google rejected the API key or this project's Map Tiles access."
+            case let .serviceRejected(reason, code): "Google Map Tiles rejected the request (HTTP \(code)). \(reason.guidance)"
             case .requestFailed(429): "Google Map Tiles quota or rate limit reached (HTTP 429). Check the project's Map Tiles quotas in Google Cloud. Changing the region or detail will not reset the quota."
             case let .requestFailed(code): code.map { "Tile service request failed (HTTP \($0))." } ?? "The tile service could not be reached."
             case .noCoverage: "No 3D tile content covers this region."
-            case .detailUnavailable: "The requested detail is unavailable within the traversal limits. Increase the detail error or reduce the area."
+            case .detailUnavailable: "The source does not provide the requested detail for part of this area. Increase the detail error or choose another area."
+        }
+    }
+}
+
+public enum EarthServiceRejection: Sendable
+{
+    case invalidKey, ipRestricted, apiRestricted, applicationRestricted, apiDisabled, billingDisabled, quotaExceeded, permissionDenied
+
+    var guidance: String
+    {
+        switch self
+        {
+            case .invalidKey: "The API key is invalid, expired or missing. Enter the current key string."
+            case .ipRestricted: "This network's public IP address is not allowed by the key. Check both IPv4 and IPv6; temporary IPv6 addresses can change."
+            case .apiRestricted: "The key's API restrictions do not allow Map Tiles API (tile.googleapis.com)."
+            case .applicationRestricted: "The key's application restriction does not allow this direct HTTPS macOS client. Check the key's allowed client restrictions."
+            case .apiDisabled: "Enable Map Tiles API in the project associated with this key."
+            case .billingDisabled: "The key's project needs an active linked billing account."
+            case .quotaExceeded: "The project reached a service quota or request rate limit. Check Map Tiles quotas before retrying."
+            case .permissionDenied: "Check the key, project billing, Map Tiles enablement and key restrictions, including both public IPv4 and IPv6 addresses."
         }
     }
 }

@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-public struct EarthGeographicOrigin: Sendable
+public struct EarthGeographicOrigin: Codable, Equatable, Sendable
 {
     public let latitude: Double
     public let longitude: Double
@@ -19,6 +19,14 @@ public struct EarthGeographicOrigin: Sendable
         self.latitude = latitude
         self.longitude = longitude
         self.ellipsoidHeight = ellipsoidHeight
+    }
+
+    private enum CodingKeys: String, CodingKey { case latitude, longitude, ellipsoidHeight }
+
+    public init(from decoder: any Decoder) throws
+    {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(latitude: values.decode(Double.self, forKey: .latitude), longitude: values.decode(Double.self, forKey: .longitude), ellipsoidHeight: values.decode(Double.self, forKey: .ellipsoidHeight))
     }
 
     /// WGS84 Earth-centered coordinates to local East / Up / South, in meters.

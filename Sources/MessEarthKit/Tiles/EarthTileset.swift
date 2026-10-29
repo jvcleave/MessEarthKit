@@ -3,7 +3,20 @@ import simd
 
 struct EarthTileset: Codable
 {
-    struct Asset: Codable { let version: String }
+    struct Asset: Codable
+    {
+        let version: String
+        let tilesetVersion: String?
+        let copyright: String?
+
+        init(version: String, tilesetVersion: String? = nil, copyright: String? = nil)
+        {
+            self.version = version
+            self.tilesetVersion = tilesetVersion
+            self.copyright = copyright
+        }
+    }
+
     struct Presence: Codable {}
     struct Content: Codable { let uri: String }
     struct BoundingVolume: Codable

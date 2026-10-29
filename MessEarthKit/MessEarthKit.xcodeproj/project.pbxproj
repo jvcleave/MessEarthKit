@@ -8,17 +8,32 @@
 
 /* Begin PBXBuildFile section */
 		EA4700010000000000000001 /* MessEarthKit in Frameworks */ = {isa = PBXBuildFile; productRef = EA4700010000000000000003 /* MessEarthKit */; };
-		EA4700010000000000000002 /* Fixtures in Resources */ = {isa = PBXBuildFile; fileRef = EA4700010000000000000004 /* Fixtures */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		0322DC0E30918E2700993292 /* MessEarthKit.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MessEarthKit.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		EA4700010000000000000004 /* Fixtures */ = {isa = PBXFileReference; lastKnownFileType = folder; name = Fixtures; path = ../Tools/IntegrationProbe/Fixtures; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		EA4700010000000000000010 /* Exceptions for "MessEarthKit" folder in "MessEarthKit" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Storage/Tests/EarthAppFilesTests.swift,
+				Storage/Tests/EarthProjectDeletionTests.swift,
+				Storage/Tests/EarthProjectStoreTests.swift,
+				Workflow/Tests/EarthProjectCaptureTests.swift,
+				Workflow/Tests/EarthRegionPreviewTests.swift,
+			);
+			target = 0322DC0D30918E2700993292 /* MessEarthKit */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		0322DC1030918E2700993292 /* MessEarthKit */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				EA4700010000000000000010 /* Exceptions for "MessEarthKit" folder in "MessEarthKit" target */,
+			);
 			path = MessEarthKit;
 			sourceTree = "<group>";
 		};
@@ -38,7 +53,6 @@
 			isa = PBXGroup;
 			children = (
 				0322DC1030918E2700993292 /* MessEarthKit */,
-				EA4700010000000000000004 /* Fixtures */,
 				0322DC0F30918E2700993292 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -116,7 +130,6 @@
 		0322DC0C30918E2700993292 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				EA4700010000000000000002 /* Fixtures in Resources */,
 			);
 		};
 /* End PBXResourcesBuildPhase section */
@@ -259,11 +272,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 889HC48YMG;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -293,11 +304,9 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 889HC48YMG;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
-				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
-				ENABLE_USER_SELECTED_FILES = readwrite;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (

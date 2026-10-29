@@ -3,30 +3,6 @@ import MessEarthKit
 import MetalKit
 import simd
 
-/// Immutable GPU resources after preparation; buffers/textures are never rewritten.
-final class EarthPreparedPreview: @unchecked Sendable
-{
-    struct Mesh
-    {
-        let vertices: MTLBuffer
-        let indices: MTLBuffer
-        let indexCount: Int
-        let material: EarthMaterial
-        let texture: MTLTexture
-        let sampler: MTLSamplerState
-        let center: SIMD3<Float>
-    }
-
-    let meshes: [Mesh]
-    let bounds: EarthBounds
-
-    init(meshes: [Mesh], bounds: EarthBounds)
-    {
-        self.meshes = meshes
-        self.bounds = bounds
-    }
-}
-
 /// Metal construction/preparation is worker-owned. Only the small scene/camera
 /// mailbox is mutable and every access to it is protected by `lock`.
 final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
@@ -36,17 +12,16 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     private let pipeline: MTLRenderPipelineState
     private let opaqueDepth: MTLDepthStencilState
     private let blendedDepth: MTLDepthStencilState
-    private let whiteTexture: MTLTexture
     private let lock = NSLock()
     private var scene: EarthPreparedPreview?
     private var yaw: Float = .pi / 5
     private var pitch: Float = .pi / 4
-    private var distance: Float = 10
+    private var zoomScale: Float = 1
 
-    init(device: MTLDevice) throws
+    init(device: MTLDevice, library suppliedLibrary: MTLLibrary? = nil) throws
     {
         guard let queue = device.makeCommandQueue(),
-              let library = device.makeDefaultLibrary(),
+              let library = suppliedLibrary ?? device.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "earthPreviewVertex"),
               let fragment = library.makeFunction(name: "earthPreviewFragment")
         else { throw EarthImportError.unsupportedContent("The Metal preview is unavailable.") }
@@ -73,79 +48,19 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         guard let blended = device.makeDepthStencilState(descriptor: depth)
         else { throw EarthImportError.unsupportedContent("Depth testing is unavailable.") }
         blendedDepth = blended
-        let whiteDescriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 1, height: 1, mipmapped: false)
-        whiteDescriptor.storageMode = .shared
-        whiteDescriptor.usage = .shaderRead
-        guard let white = device.makeTexture(descriptor: whiteDescriptor)
-        else { throw EarthImportError.limitExceeded("Cannot allocate the constant material texture.") }
-        var pixel: [UInt8] = [255, 255, 255, 255]
-        pixel.withUnsafeMutableBytes { white.replace(region: MTLRegionMake2D(0, 0, 1, 1), mipmapLevel: 0, withBytes: $0.baseAddress!, bytesPerRow: 4) }
-        whiteTexture = white
         super.init()
     }
 
     func prepare(capture: EarthCapture) throws -> EarthPreparedPreview
     {
-        let loader = MTKTextureLoader(device: device)
-        var textures: [Int: (MTLTexture, MTLSamplerState)] = [:]
-        for (index, material) in capture.materials.enumerated()
-        {
-            try Task.checkCancellation()
-            let sampler = MTLSamplerDescriptor()
-            let texture: MTLTexture
-            if let source = material.baseColorTexture
-            {
-                texture = try loader.newTexture(data: source.encodedImage, options: [.SRGB: true, .origin: MTKTextureLoader.Origin.topLeft.rawValue, .generateMipmaps: source.mipmapFilter != .none])
-                sampler.sAddressMode = addressMode(mode: source.wrapS)
-                sampler.tAddressMode = addressMode(mode: source.wrapT)
-                sampler.magFilter = source.usesNearestMagnification ? .nearest : .linear
-                sampler.minFilter = source.usesNearestMinification ? .nearest : .linear
-                switch source.mipmapFilter
-                {
-                    case .none: sampler.mipFilter = .notMipmapped
-                    case .nearest: sampler.mipFilter = .nearest
-                    case .linear: sampler.mipFilter = .linear
-                }
-            }
-            else
-            {
-                texture = whiteTexture
-            }
-            guard let state = device.makeSamplerState(descriptor: sampler)
-            else { throw EarthImportError.limitExceeded("Cannot allocate texture sampling state.") }
-            textures[index] = (texture, state)
-        }
-        var meshes: [EarthPreparedPreview.Mesh] = []
-        for mesh in capture.meshes
-        {
-            try Task.checkCancellation()
-            let vertices = mesh.vertices.withUnsafeBytes
-            { bytes in
-                bytes.baseAddress.flatMap { device.makeBuffer(bytes: $0, length: bytes.count, options: .storageModeShared) }
-            }
-            let indices = mesh.triangleIndices.withUnsafeBytes
-            { bytes in
-                bytes.baseAddress.flatMap { device.makeBuffer(bytes: $0, length: bytes.count, options: .storageModeShared) }
-            }
-            guard let vertices, let indices, let texture = textures[mesh.materialIndex]
-            else { throw EarthImportError.limitExceeded("Cannot allocate preview geometry.") }
-            var minimum = mesh.vertices[0].position
-            var maximum = minimum
-            for vertex in mesh.vertices
-            {
-                minimum = simd_min(minimum, vertex.position)
-                maximum = simd_max(maximum, vertex.position)
-            }
-            meshes.append(.init(vertices: vertices, indices: indices, indexCount: mesh.triangleIndices.count, material: capture.materials[mesh.materialIndex], texture: texture.0, sampler: texture.1, center: (minimum + maximum) / 2))
-        }
-        return EarthPreparedPreview(meshes: meshes, bounds: capture.bounds)
+        try EarthPreviewSceneBuilder(device: device).prepare(capture: capture)
     }
 
     func publish(scene: EarthPreparedPreview)
     {
         lock.lock()
         self.scene = scene
-        distance = max(1, simd_length(scene.bounds.dimensions) * 1.4)
+        zoomScale = 1
         yaw = .pi / 5
         pitch = .pi / 4
         lock.unlock()
@@ -154,7 +69,7 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     func resetCamera()
     {
         lock.lock()
-        if let scene { distance = max(1, simd_length(scene.bounds.dimensions) * 1.4) }
+        zoomScale = 1
         yaw = .pi / 5
         pitch = .pi / 4
         lock.unlock()
@@ -171,25 +86,23 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     func zoom(delta: Float)
     {
         lock.lock()
-        if let scene
-        {
-            let radius = max(0.1, simd_length(scene.bounds.dimensions))
-            distance = min(radius * 50, max(radius * 0.05, distance * exp(delta * 0.04)))
-        }
+        zoomScale = min(50, max(0.05, zoomScale * exp(delta * 0.04)))
         lock.unlock()
     }
 
     func draw(in view: MTKView)
     {
         lock.lock()
-        let snapshot = (scene, yaw, pitch, distance)
+        let snapshot = (scene, yaw, pitch, zoomScale)
         lock.unlock()
         guard let scene = snapshot.0, view.drawableSize.width > 0, view.drawableSize.height > 0,
               let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: descriptor)
         else { return }
         let center = scene.bounds.center
-        let eye = center + SIMD3(cos(snapshot.2) * sin(snapshot.1), sin(snapshot.2), cos(snapshot.2) * cos(snapshot.1)) * snapshot.3
+        let aspect = Float(view.drawableSize.width / view.drawableSize.height)
+        let distance = Self.fittingDistance(bounds: scene.bounds, aspect: aspect) * snapshot.3
+        let eye = center + SIMD3(cos(snapshot.2) * sin(snapshot.1), sin(snapshot.2), cos(snapshot.2) * cos(snapshot.1)) * distance
         let back = simd_normalize(eye - center)
         let right = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), back))
         let up = simd_cross(back, right)
@@ -199,8 +112,8 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             SIMD4(right.z, up.z, back.z, 0),
             SIMD4(-simd_dot(right, eye), -simd_dot(up, eye), -simd_dot(back, eye), 1)
         ))
-        let near = max(0.001, snapshot.3 / 1000)
-        let far = max(near + 1, snapshot.3 + simd_length(scene.bounds.dimensions) * 10)
+        let near = max(0.001, distance / 1000)
+        let far = max(near + 1, distance + simd_length(scene.bounds.dimensions) * 10)
         let verticalScale = 1 / tan(Float.pi / 8)
         let horizontalScale = verticalScale / Float(view.drawableSize.width / view.drawableSize.height)
         let projection = simd_float4x4(columns: (SIMD4(horizontalScale, 0, 0, 0), SIMD4(0, verticalScale, 0, 0), SIMD4(0, 0, far / (near - far), -1), SIMD4(0, 0, near * far / (near - far), 0)))
@@ -233,14 +146,13 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}
 
-    private func addressMode(mode: EarthTextureWrap) -> MTLSamplerAddressMode
+    /// Fit the enclosing sphere against both axes, including narrow viewports.
+    static func fittingDistance(bounds: EarthPreviewBounds, aspect: Float) -> Float
     {
-        switch mode
-        {
-            case .repeatTexture: .repeat
-            case .mirroredRepeat: .mirrorRepeat
-            case .clampToEdge: .clampToEdge
-        }
+        let halfVertical: Float = .pi / 8
+        let halfHorizontal = atan(tan(halfVertical) * max(0.001, aspect))
+        let radius = max(0.1, simd_length(bounds.dimensions) / 2)
+        return radius / sin(min(halfVertical, halfHorizontal)) * 1.1
     }
 }
 

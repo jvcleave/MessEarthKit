@@ -10,26 +10,30 @@ public actor EarthCaptureSession
     private var isCapturing = false
     public private(set) var lastObservation: EarthCaptureObservation?
 
-    public init(apiKey: String, limits: EarthImportLimits = EarthImportLimits())
+    public init(apiKey: String, limits: EarthImportLimits = EarthImportLimits(), requestObserver: EarthRequestObserver? = nil)
     {
         self.apiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         self.limits = limits
         let client = EarthGoogleTileClient()
-        loadResource = { url, maximumBytes in try await client.load(url: url, maximumBytes: maximumBytes) }
+        let transport = EarthRequestTransport(observer: requestObserver, loader: { url, maximumBytes in try await client.load(url: url, maximumBytes: maximumBytes) })
+        loadResource = { url, maximumBytes in try await transport.load(url: url, maximumBytes: maximumBytes) }
     }
 
-    init(apiKey: String, limits: EarthImportLimits = EarthImportLimits(), resourceLoader: @escaping ResourceLoader)
+    init(apiKey: String, limits: EarthImportLimits = EarthImportLimits(), requestObserver: EarthRequestObserver? = nil, resourceLoader: @escaping ResourceLoader)
     {
         self.apiKey = apiKey
         self.limits = limits
-        loadResource = resourceLoader
+        let transport = EarthRequestTransport(observer: requestObserver, loader: resourceLoader)
+        loadResource = { url, maximumBytes in try await transport.load(url: url, maximumBytes: maximumBytes) }
     }
 
     /// One explicit capture per session, with bounded serial requests. An active
     /// job finishes, fails, or cancels; a second job cannot change its request.
     /// An optional new recovery directory retains each completed tile before
-    /// proceeding. Errors still throw; reopen its manifest for a marked partial
-    /// capture. The caller owns directory authorization and retention.
+    /// proceeding. Interrupted traversal leaves a marked partial manifest.
+    /// Once traversal finishes, later decoding errors still throw but leave
+    /// complete source coverage for offline preparation with revised budgets.
+    /// The caller owns directory authorization and retention.
     public func capture(
         request: EarthCaptureRequest,
         recoveryDirectoryURL: URL? = nil,
@@ -40,29 +44,32 @@ public actor EarthCaptureSession
         defer { isCapturing = false }
         let writer = try recoveryDirectoryURL.map { try EarthCaptureRecoveryWriter(directoryURL: $0) }
         var state = EarthCaptureTraversal(maximumSourceRequests: request.maximumSourceRequests, recoveryWriter: writer)
+        var sourceDownloadIsComplete = false
         do
         {
             let root = try resourceURL(uri: "/v1/3dtiles/root.json", parent: URL(string: "https://tile.googleapis.com")!)
             let data = try await load(url: root, state: &state, progress: progress)
             let tileset = try decodeTileset(data: data)
             state.activeTilesets.insert(root)
-            try await visit(tile: tileset.root, parentTransform: matrix_identity_double4x4, inheritedRefine: "REPLACE", parentURL: root, depth: 0, selection: EarthRegionSelection(request: request), state: &state, progress: progress)
+            try await visit(tile: tileset.root, parentTransform: matrix_identity_double4x4, inheritedRefine: "REPLACE", parentURL: root, depth: 0, request: request, selection: EarthRegionSelection(request: request), state: &state, progress: progress)
             guard !state.selectedTiles.isEmpty else { throw EarthCaptureError.noCoverage }
             try Task.checkCancellation()
             let manifest = try EarthCaptureManifest.encode(request: request, limits: limits, tiles: state.selectedTiles, incompleteReason: nil, downloadedTiles: state.files.count, sourceRequests: state.requestCount)
             let files = [EarthSourceFile(relativePath: "tileset.json", data: manifest)] + state.files
+            try checkpoint(request: request, state: state, incompleteReason: nil)
+            sourceDownloadIsComplete = true
             let capture = try await EarthCaptureImporter(limits: limits).importSourceFiles(sourceFiles: files, rootSourcePath: "tileset.json")
             try Task.checkCancellation()
-            try checkpoint(request: request, state: state, incompleteReason: nil)
             progress(.init(sourceRequests: state.requestCount, visitedTiles: state.visitedTiles, downloadedTiles: state.files.count, downloadedBytes: state.downloadedBytes))
             lastObservation = EarthCaptureObservation(request: request, capture: capture, selectedTiles: state.selectedTiles.count, sourceRequests: state.requestCount, sourceBytes: state.downloadedBytes)
             return capture
         }
         catch
         {
-            // Cancellation must retain the already committed checkpoint too.
-            // A failed final metadata write leaves the previous partial manifest.
-            try? checkpoint(request: request, state: state, incompleteReason: interruptionReason(error: error))
+            // Preview decoding cannot change already committed source coverage.
+            // Traversal failure/cancellation still retains its partial checkpoint.
+            if !sourceDownloadIsComplete
+            { try? checkpoint(request: request, state: state, incompleteReason: interruptionReason(error: error)) }
             throw error
         }
     }
@@ -85,7 +92,7 @@ public actor EarthCaptureSession
             let data = try await load(url: root, state: &state, progress: progress)
             let tileset = try decodeTileset(data: data)
             state.activeTilesets.insert(root)
-            try await visit(tile: tileset.root, parentTransform: matrix_identity_double4x4, inheritedRefine: "REPLACE", parentURL: root, depth: 0, selection: EarthRegionSelection(request: request), state: &state, progress: progress)
+            try await visit(tile: tileset.root, parentTransform: matrix_identity_double4x4, inheritedRefine: "REPLACE", parentURL: root, depth: 0, request: request, selection: EarthRegionSelection(request: request), state: &state, progress: progress)
         }
         catch let error as EarthImportError
         {
@@ -167,6 +174,7 @@ public actor EarthCaptureSession
         inheritedRefine: String,
         parentURL: URL,
         depth: Int,
+        request: EarthCaptureRequest,
         selection: EarthRegionSelection,
         state: inout EarthCaptureTraversal,
         progress: @escaping @Sendable (EarthCaptureProgress) -> Void
@@ -176,18 +184,13 @@ public actor EarthCaptureSession
         state.visitedTiles += 1
         guard depth < 64, state.visitedTiles <= limits.maximumNodes
         else { throw EarthImportError.limitExceeded("Capture traversal nodes/depth.") }
-        guard tile.implicitTiling == nil
-        else { throw EarthImportError.unsupportedContent("Implicit source tiling.") }
-        let transform = parentTransform * (try tile.localTransform())
-        guard try selection.intersects(bounds: tile.boundingVolume, transform: transform) else { return }
-        let refine = tile.refine ?? inheritedRefine
-        guard ["ADD", "REPLACE"].contains(refine), tile.geometricError.isFinite, tile.geometricError >= 0,
-              !(tile.content != nil && tile.contents != nil)
-        else { throw EarthImportError.invalidContent("Invalid source refinement/content metadata.") }
-        let contents = tile.contents ?? tile.content.map { [$0] } ?? []
-        let children = tile.children ?? []
-        let needsDetail = tile.geometricError * selection.errorScale(transform: transform) > selection.request.maximumGeometricErrorMeters
-        let descend = !children.isEmpty && (needsDetail || contents.isEmpty)
+        guard let selected = try EarthSourceTileSelection(tile: tile, parentTransform: parentTransform, inheritedRefine: inheritedRefine, selection: selection) else { return }
+        let transform = selected.transform
+        let refine = selected.refine
+        let contents = selected.contents
+        let children = selected.children
+        let needsDetail = selected.needsDetail
+        let descend = selected.descend
         if !descend || refine == "ADD"
         {
             for content in contents
@@ -200,7 +203,7 @@ public actor EarthCaptureSession
                         defer { state.activeTilesets.remove(url) }
                         let data = try await load(url: url, state: &state, progress: progress)
                         let external = try decodeTileset(data: data)
-                        try await visit(tile: external.root, parentTransform: transform, inheritedRefine: refine, parentURL: url, depth: depth + 1, selection: selection, state: &state, progress: progress)
+                        try await visit(tile: external.root, parentTransform: transform, inheritedRefine: refine, parentURL: url, depth: depth + 1, request: request, selection: selection, state: &state, progress: progress)
                     case "glb":
                         if needsDetail, children.isEmpty { throw EarthCaptureError.detailUnavailable }
                         if state.isPrechecking
@@ -209,9 +212,9 @@ public actor EarthCaptureSession
                             state.plannedTiles.append(EarthPlannedTile(url: url, bounds: tile.boundingVolume, transform: transform))
                             continue
                         }
-                        guard state.selectedTiles.count < selection.request.maximumSelectedTiles
-                        else { throw EarthImportError.limitExceeded("Selected tile count (\(selection.request.maximumSelectedTiles)). Increase Maximum Tiles, increase the detail error, or reduce the area.") }
-                        _ = try await selectPayload(url: url, bounds: tile.boundingVolume, transform: transform, request: selection.request, state: &state, progress: progress)
+                        guard state.selectedTiles.count < request.maximumSelectedTiles
+                        else { throw EarthImportError.limitExceeded("Selected tile count (\(request.maximumSelectedTiles)). Increase Maximum Tiles, increase the detail error, or reduce the area.") }
+                        _ = try await selectPayload(url: url, bounds: tile.boundingVolume, transform: transform, request: request, state: &state, progress: progress)
                     default: throw EarthImportError.unsupportedContent("Source content must be a GLB or an explicit JSON tileset.")
                 }
             }
@@ -220,7 +223,7 @@ public actor EarthCaptureSession
         {
             for child in children
             {
-                try await visit(tile: child, parentTransform: transform, inheritedRefine: refine, parentURL: parentURL, depth: depth + 1, selection: selection, state: &state, progress: progress)
+                try await visit(tile: child, parentTransform: transform, inheritedRefine: refine, parentURL: parentURL, depth: depth + 1, request: request, selection: selection, state: &state, progress: progress)
             }
         }
     }
@@ -289,23 +292,7 @@ public actor EarthCaptureSession
 
     private func resourceURL(uri: String, parent: URL) throws -> URL
     {
-        guard let url = URL(string: uri, relativeTo: parent)?.absoluteURL,
-              var components = URLComponents(url: url, resolvingAgainstBaseURL: true),
-              components.scheme == "https", components.host == "tile.googleapis.com",
-              components.port == nil || components.port == 443,
-              components.user == nil, components.password == nil, components.fragment == nil,
-              url.standardized.path.hasPrefix("/v1/3dtiles/")
-        else { throw EarthImportError.unsupportedContent("Source URI is outside the Google 3D Tiles endpoint.") }
-        var query = (components.queryItems ?? []).filter { $0.name != "key" }
-        if !query.contains(where: { $0.name == "session" }),
-           let session = URLComponents(url: parent, resolvingAgainstBaseURL: true)?.queryItems?.first(where: { $0.name == "session" })
-        {
-            query.append(session)
-        }
-        query.append(URLQueryItem(name: "key", value: apiKey))
-        components.queryItems = query
-        guard let authorized = components.url else { throw EarthImportError.invalidContent("Invalid source URI.") }
-        return authorized
+        try EarthSourceAccess(apiKey: apiKey).resourceURL(uri: uri, parent: parent)
     }
 
     private func decodeTileset(data: Data) throws -> EarthTileset

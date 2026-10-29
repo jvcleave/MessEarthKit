@@ -5,6 +5,13 @@ Google capture/save/reopen. GUI visual validation and consumer delivery remain p
 Updated: 2026-10-28 (America/New_York).
 Owning repository: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
 
+The next adopted direction is recorded in
+[Disk-backed acquisition, local preparation, and request history](DISK_BACKED_CAPTURE_AND_LOCAL_USAGE_PLAN.md).
+That update prioritizes MessEarthKitExample, separates source acquisition from
+destination model limits, and adds a clearable rolling 30-day local request
+counter. Earlier resource-cap and milestone descriptions below record the
+initial implementation; use the update plan for the next work.
+
 ## Objective and definition of done
 
 Build a standalone macOS capture application backed by a reusable Swift package,

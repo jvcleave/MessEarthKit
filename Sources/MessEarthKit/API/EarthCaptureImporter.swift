@@ -25,6 +25,44 @@ public actor EarthCaptureImporter
         return try importSourceFiles(sourceFiles: precheck.sourceFiles, rootSourcePath: "tileset.json")
     }
 
+    public func prepareCollection(fileURL: URL) throws -> EarthCaptureCollection
+    {
+        try makeCollection(fileURL: fileURL, suppliedFiles: nil)
+    }
+
+    public func prepareCollection(precheck: EarthCapturePrecheck) throws -> EarthCaptureCollection
+    {
+        guard precheck.hasReusableSources else { throw EarthImportError.invalidContent("The source inspection is incomplete. Reduce the area or increase the advanced source budget.") }
+        return try prepareCollection(sourceFiles: precheck.sourceFiles, rootSourcePath: "tileset.json")
+    }
+
+    public func prepareCollection(sourceFiles: [EarthSourceFile], rootSourcePath: String) throws -> EarthCaptureCollection
+    {
+        let root = URL(fileURLWithPath: "/MessEarthCapture")
+        var files: [URL: Data] = [:]
+        for file in sourceFiles
+        {
+            let url = root.appendingPathComponent(file.relativePath).standardizedFileURL
+            guard !file.relativePath.hasPrefix("/"), url.path.hasPrefix(root.path + "/"), files[url] == nil
+            else { throw EarthImportError.invalidContent("Duplicate or escaping capture path.") }
+            files[url] = file.data
+        }
+        return try makeCollection(fileURL: root.appendingPathComponent(rootSourcePath), suppliedFiles: files)
+    }
+
+    public func importSection(_ section: EarthCaptureSection) throws -> EarthCapture
+    {
+        try importSourceFiles(sourceFiles: section.sourceFiles, rootSourcePath: "tileset.json")
+    }
+
+    private func makeCollection(fileURL: URL, suppliedFiles: [URL: Data]?) throws -> EarthCaptureCollection
+    {
+        guard fileURL.pathExtension.lowercased() == "json" else { throw EarthImportError.unsupportedContent("Model collections require a tileset JSON.") }
+        let graph = try readGraph(fileURL: fileURL, suppliedFiles: suppliedFiles, plansSections: true)
+        guard let origin = graph.origin else { throw EarthImportError.invalidContent("A geographic collection needs a shared origin.") }
+        return try EarthCaptureCollectionBuilder(limits: limits).build(tiles: graph.assembly.plannedTiles, origin: origin, name: fileURL.deletingPathExtension().lastPathComponent, incompleteReason: graph.incompleteReason, preparationProfile: graph.preparationProfile)
+    }
+
     /// Imports host-supplied immutable bytes without opening their source files.
     /// The host owns file authorization and loading; relative references and all
     /// ordinary decoding limits are validated by this importer.
@@ -44,35 +82,8 @@ public actor EarthCaptureImporter
 
     private func importSource(fileURL: URL, suppliedFiles: [URL: Data]?) throws -> EarthCapture
     {
-        try Task.checkCancellation()
-        guard fileURL.isFileURL,
-              limits.maximumSourceBytes > 0, limits.maximumVertices > 0,
-              limits.maximumVertices <= Int(UInt32.max) / 3,
-              limits.maximumNodes > 0, limits.maximumNodes <= 1000000,
-              limits.maximumTextureDimension > 0, limits.maximumDecodedTextureBytes > 0
-        else { throw EarthImportError.invalidContent("A local file and positive bounded import limits are required.") }
-        let sourceURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
-        let directory = fileURL.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-        var assembly = EarthImportAssembly(suppliedFiles: suppliedFiles)
-        let data = try readSource(fileURL: sourceURL, rootDirectory: directory, assembly: &assembly)
-        let origin: EarthGeographicOrigin?
-        var incompleteReason: String?
-        switch sourceURL.pathExtension.lowercased()
-        {
-            case "glb":
-                origin = nil
-                try appendGLB(data: data, transform: matrix_identity_double4x4, assembly: &assembly)
-            case "json":
-                let tileset = try decodeTileset(data: data)
-                incompleteReason = try EarthCaptureManifest.incompleteReason(data: data)
-                let rootTransform = try tileset.root.localTransform()
-                let frame = try tileset.root.boundingVolume.geographicOrigin(transform: rootTransform)
-                origin = frame
-                var activeFiles: Set<URL> = [sourceURL]
-                try appendTile(tile: tileset.root, parentTransform: matrix_identity_double4x4, earthToLocal: frame.earthCenteredToLocal, inheritedRefine: "REPLACE", tilesetURL: sourceURL, rootDirectory: directory, depth: 0, activeFiles: &activeFiles, assembly: &assembly)
-            default: throw EarthImportError.unsupportedContent("Select a self-contained GLB or a local 3D Tiles tileset JSON.")
-        }
-        try Task.checkCancellation()
+        let graph = try readGraph(fileURL: fileURL, suppliedFiles: suppliedFiles, plansSections: false)
+        let assembly = graph.assembly
         guard let firstVertex = assembly.meshes.first?.vertices.first
         else { throw EarthImportError.invalidContent("The capture has no usable geometry.") }
         var minimum = firstVertex.position
@@ -86,18 +97,61 @@ public actor EarthCaptureImporter
                 maximum = simd_max(maximum, vertex.position)
             }
         }
-        try Task.checkCancellation()
         return EarthCapture(
-            name: sourceURL.deletingPathExtension().lastPathComponent,
+            name: fileURL.deletingPathExtension().lastPathComponent,
             meshes: assembly.meshes,
             materials: assembly.materials,
             bounds: EarthBounds(minimum: minimum, maximum: maximum),
-            geographicOrigin: origin,
+            geographicOrigin: graph.origin,
             sourceFiles: assembly.sourceFiles,
             rootSourcePath: assembly.sourceFiles[0].relativePath,
             attributions: assembly.attributions.sorted(),
-            incompleteReason: incompleteReason
+            incompleteReason: graph.incompleteReason,
+            preparationProfile: graph.preparationProfile
         )
+    }
+
+    private func readGraph(fileURL: URL, suppliedFiles: [URL: Data]?, plansSections: Bool) throws -> (assembly: EarthImportAssembly, origin: EarthGeographicOrigin?, incompleteReason: String?, preparationProfile: EarthPreparationProfile?)
+    {
+        try Task.checkCancellation()
+        guard fileURL.isFileURL,
+              limits.maximumSourceBytes > 0, limits.maximumVertices > 0,
+              limits.maximumVertices <= Int(UInt32.max) / 3,
+              limits.maximumNodes > 0, limits.maximumNodes <= 1000000,
+              limits.maximumTextureDimension > 0, limits.maximumDecodedTextureBytes > 0
+        else { throw EarthImportError.invalidContent("A local file and positive bounded import limits are required.") }
+        let sourceURL = fileURL.standardizedFileURL.resolvingSymlinksInPath()
+        let directory = fileURL.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+        var assembly = EarthImportAssembly(suppliedFiles: suppliedFiles)
+        assembly.plansSections = plansSections
+        let data = try readSource(fileURL: sourceURL, rootDirectory: directory, assembly: &assembly)
+        let origin: EarthGeographicOrigin?
+        var incompleteReason: String?
+        var preparationProfile: EarthPreparationProfile?
+        switch sourceURL.pathExtension.lowercased()
+        {
+            case "glb":
+                let json = try EarthGLBDecoder(limits: limits).preflight(data: data, enforcesVertexBudget: false)
+                let combined = try EarthCombinedGLBMetadata.read(json: json, maximumEntries: limits.maximumNodes)
+                preparationProfile = try combined?.sourceProfile ?? EarthPreparationProfile.readMetadata(json: json)
+                origin = combined?.geographicOrigin
+                incompleteReason = combined?.preparationComplete == false ? combined?.preparationIssue : nil
+                try appendGLB(data: data, transform: matrix_identity_double4x4, assembly: &assembly)
+                if let combined { assembly.attributions = Set(combined.attributions) }
+            case "json":
+                let tileset = try decodeTileset(data: data)
+                preparationProfile = try EarthPreparationProfile.readMetadata(json: JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:])
+                incompleteReason = try EarthCaptureManifest.incompleteReason(data: data)
+                let rootTransform = try tileset.root.localTransform()
+                let inferred = try tileset.root.boundingVolume.geographicOrigin(transform: rootTransform)
+                let frame = try EarthCaptureManifest.sharedOrigin(data: data) ?? inferred
+                origin = frame
+                var activeFiles: Set<URL> = [sourceURL]
+                try appendTile(tile: tileset.root, parentTransform: matrix_identity_double4x4, earthToLocal: frame.earthCenteredToLocal, inheritedRefine: "REPLACE", tilesetURL: sourceURL, rootDirectory: directory, depth: 0, activeFiles: &activeFiles, assembly: &assembly)
+            default: throw EarthImportError.unsupportedContent("Select a self-contained GLB or a local 3D Tiles tileset JSON.")
+        }
+        try Task.checkCancellation()
+        return (assembly, origin, incompleteReason, preparationProfile)
     }
 
     private func appendTile(
@@ -138,6 +192,12 @@ public actor EarthCaptureImporter
                 switch url.pathExtension.lowercased()
                 {
                     case "glb":
+                        if assembly.plansSections
+                        {
+                            let estimate = try EarthGLBEstimate(limits: limits).estimate(data: data)
+                            assembly.plannedTiles.append(EarthCollectionTile(sourceID: url.path, data: data, bounds: tile.boundingVolume, transform: transform, estimate: estimate))
+                            continue
+                        }
                         // 3D Tiles converts glTF's Y-up coordinates to tile Z-up before applying tile transforms.
                         let gltfToTile = simd_double4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, -1, 0, 0), SIMD4(0, 0, 0, 1)))
                         try appendGLB(data: data, transform: earthToLocal * transform * gltfToTile, assembly: &assembly)
@@ -250,4 +310,6 @@ private struct EarthImportAssembly
     var sourceBytes = 0
     var vertexCount = 0
     var textureBytes = 0
+    var plansSections = false
+    var plannedTiles: [EarthCollectionTile] = []
 }

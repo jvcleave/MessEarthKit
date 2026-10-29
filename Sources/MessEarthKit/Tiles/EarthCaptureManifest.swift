@@ -48,4 +48,18 @@ enum EarthCaptureManifest
         else { throw EarthImportError.invalidContent("Invalid incomplete-capture metadata.") }
         return reason
     }
+
+    /// Our aligned model manifests already record their exact shared origin.
+    /// Reconstructing it from ECEF bounds introduces round-trip differences and
+    /// changes the frame used to import otherwise unchanged prepared models.
+    static func sharedOrigin(data: Data) throws -> EarthGeographicOrigin?
+    {
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let extras = json?["extras"] as? [String: Any],
+              let marker = extras["messEarthKitSharedOrigin"] else { return nil }
+        guard let metadata = marker as? [String: Any]
+        else { throw EarthImportError.invalidContent("Invalid shared geographic origin metadata.") }
+        do { return try JSONDecoder().decode(EarthGeographicOrigin.self, from: JSONSerialization.data(withJSONObject: metadata)) }
+        catch { throw EarthImportError.invalidContent("Invalid shared geographic origin metadata.") }
+    }
 }

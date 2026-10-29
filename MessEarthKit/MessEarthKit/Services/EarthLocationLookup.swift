@@ -26,7 +26,7 @@ actor EarthLocationLookup
         }
         try Task.checkCancellation()
         guard response.mapItems.count == 1, let item = response.mapItems.first
-        else { throw EarthImportError.invalidContent("Address lookup needs one clear match. Refine the address or enter coordinates.") }
+        else { throw EarthImportError.invalidContent("Address lookup needs one clear match. Refine the address and update the map again.") }
         let coordinate = item.placemark.coordinate
         guard CLLocationCoordinate2DIsValid(coordinate)
         else { throw EarthImportError.invalidContent("Address lookup returned invalid coordinates.") }

@@ -5,6 +5,27 @@ import Metal
 import Observation
 import UniformTypeIdentifiers
 
+private struct EarthWorkspaceSource: Sendable
+{
+    let capture: EarthCapture
+    let collection: EarthCaptureCollection?
+    let sectionID: Int?
+    var preparedCollection: EarthPreparedCollection? = nil
+    var folderAccess: EarthFileAccess? = nil
+
+    static func firstModel(_ collection: EarthCaptureCollection, limits: EarthImportLimits) async throws -> Self
+    {
+        guard let first = collection.sections.first else { throw EarthImportError.invalidContent("The capture has no model sections.") }
+        return try await Self(capture: EarthCaptureImporter(limits: limits).importSection(first), collection: collection, sectionID: first.id)
+    }
+
+    static func firstPreparedModel(_ collection: EarthPreparedCollection) async throws -> Self
+    {
+        guard let first = try await collection.models(limit: 1).first else { throw EarthPreparationError.invalidCollection }
+        return try await Self(capture: collection.importModel(id: first.id), collection: nil, sectionID: first.id, preparedCollection: collection)
+    }
+}
+
 @MainActor
 @Observable
 final class EarthWorkspaceViewModel
@@ -13,7 +34,8 @@ final class EarthWorkspaceViewModel
     private(set) var status = "Ready"
     private(set) var summary = ""
     private(set) var attribution = ""
-    private(set) var isLoading = false
+    private var isImporting = false
+    var isLoading: Bool { isImporting || downloads.isLoading || preparedModels.isLoading || modelExport.isLoading }
     private(set) var hasPreview = false
     private(set) var previewRevision: UInt64 = 0
     private(set) var errorMessage: String?
@@ -23,16 +45,20 @@ final class EarthWorkspaceViewModel
     private(set) var captureWidth = "200"
     private(set) var captureDepth = "200"
     private(set) var detailError = "4"
-    private(set) var maximumRequests = "512"
-    private(set) var maximumTiles = "256"
     private(set) var maximumVertices = "2000000"
     private(set) var maximumTexturesMiB = "256"
-    private(set) var apiKey = ""
     private(set) var hasSavedCapture = false
-    private(set) var hasRecoverableDownload = false
-    private(set) var incompleteCaptureMessage: String?
-    private(set) var precheckDisplay: EarthCapturePrecheckDisplay?
-    private(set) var offlineEstimateDisplay: EarthOfflineEstimateDisplay?
+    private(set) var previewCoverageWarning: String?
+    private(set) var previewAppearanceNotice: String?
+    private(set) var createsOptimizedCopy = false
+    private(set) var detail: EarthCaptureDetail = .standard
+    private(set) var detailOptions: [EarthCaptureDetail] = [.preview, .standard, .high]
+    private(set) var modelSectionItems: [EarthModelSectionDisplayItem] = []
+    private(set) var modelSectionsSummary = ""
+    private(set) var selectedSectionCount = 0
+    let downloads: EarthSourceDownloadViewModel
+    let preparedModels = EarthPreparedModelsViewModel()
+    let modelExport = EarthModelExportViewModel()
 
     @ObservationIgnored private(set) var renderer: EarthPreviewRenderer?
     @ObservationIgnored private var importTask: Task<Void, Never>?
@@ -42,49 +68,72 @@ final class EarthWorkspaceViewModel
     @ObservationIgnored private var savedRootURL: URL?
     @ObservationIgnored private var activeJobID = UUID()
     @ObservationIgnored private var resolvedLocationTitle: String?
-    @ObservationIgnored private let apiKeyStore = EarthAPIKeyStore()
-    @ObservationIgnored private var credentialTask: Task<Void, Never>?
-    @ObservationIgnored private var didEditAPIKey = false
-    @ObservationIgnored private let recoveryService = EarthCaptureRecoveryService()
-    @ObservationIgnored private var recoveryRootURL: URL?
-    @ObservationIgnored private var recoveryTask: Task<Void, Never>?
-    @ObservationIgnored private var precheckResult: EarthCapturePrecheck?
-    @ObservationIgnored private var estimateHistory = EarthCaptureObservationHistory(observations: [], note: nil)
+    @ObservationIgnored private var collection: EarthCaptureCollection?
+    @ObservationIgnored private var selectedSectionIDs = Set<Int>()
+    @ObservationIgnored private var previewedSectionID: Int?
+    @ObservationIgnored private let preparationService: EarthModelPreparationService
+    @ObservationIgnored private let appFiles: EarthAppFiles
+    @ObservationIgnored private let settings: EarthSettingsViewModel
+    @ObservationIgnored private var keepsPreviewResources = false
 
-    init()
+    var apiKey: String { settings.apiKey }
+    @ObservationIgnored private var preparedFolderAccess: EarthFileAccess?
+
+    init(appFiles: EarthAppFiles, settings: EarthSettingsViewModel, projectID: UUID)
     {
-        refreshOfflineEstimate()
-        credentialTask = Task
-        { [weak self, apiKeyStore] in
-            defer { self?.credentialTask = nil }
-            do
-            {
-                let savedKey = try await apiKeyStore.load()
-                guard let self, !didEditAPIKey, !Task.isCancelled else { return }
-                if let savedKey { apiKey = savedKey }
-            }
-            catch
-            {
-                guard let self, !didEditAPIKey else { return }
-                errorMessage = error.localizedDescription
-            }
+        self.appFiles = appFiles
+        self.settings = settings
+        downloads = EarthSourceDownloadViewModel(observer: settings.usage.requestObserver, appFiles: appFiles, projectID: projectID)
+        preparationService = EarthModelPreparationService(appFiles: appFiles, projectID: projectID)
+    }
+
+    func restoreProject(_ project: EarthOpenedProject)
+    {
+        let draft = project.record.draft
+        address = draft.address
+        captureWidth = draft.widthMeters
+        captureDepth = draft.heightMeters
+        detailError = String(draft.detail.errorMeters)
+        switch draft.detail
+        {
+            case .preview: detail = .preview
+            case .standard: detail = .standard
+            case .high: detail = .high
         }
-        recoveryTask = Task
-        { [weak self, recoveryService] in
-            defer { self?.recoveryTask = nil }
-            let root = await recoveryService.mostRecentDownload()
-            let history = await recoveryService.estimateHistory()
-            guard let self else { return }
-            if recoveryRootURL == nil { recoveryRootURL = root }
-            hasRecoverableDownload = recoveryRootURL != nil
-            estimateHistory = history
-            refreshOfflineEstimate()
+        if let location = project.record.resolvedLocation
+        {
+            latitude = String(location.origin.latitude)
+            longitude = String(location.origin.longitude)
+            resolvedLocationTitle = location.title
         }
+        downloads.restore(project.archive)
+    }
+
+    func openRecordedModels(_ catalog: EarthPreparedCollection)
+    {
+        guard !isLoading else { return }
+        startLoad(title: "Downloaded Region", accessURL: catalog.directoryURL)
+        { _ in try await EarthWorkspaceSource.firstPreparedModel(catalog) }
+    }
+
+    func setPreviewVisible(_ value: Bool)
+    {
+        keepsPreviewResources = value
+        if !value { releaseHiddenPreview() }
+    }
+
+    private func releaseHiddenPreview()
+    {
+        guard !keepsPreviewResources, !isImporting else { return }
+        capture = nil
+        renderer = nil
+        hasPreview = false
     }
 
     var canResolveAddress: Bool { !isLoading && !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var canPrecheck: Bool { !isLoading && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !latitude.isEmpty && !longitude.isEmpty }
-    var canCapture: Bool { !isLoading && (!apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || precheckResult?.hasReusableSources == true) && !latitude.isEmpty && !longitude.isEmpty && precheckDisplay?.allowsCapture != false }
+    var canDownload: Bool { !isLoading && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !latitude.isEmpty && !longitude.isEmpty }
+    var canSaveCapture: Bool { !isLoading && hasPreview && (preparedModels.collection != nil ? preparedModels.selectedCount > 0 && (modelExport.mode == .separate || modelExport.canExportCombined) : (collection == nil || selectedSectionCount > 0)) }
+    var saveButtonTitle: String { preparedModels.collection != nil && modelExport.mode == .combinedGLB ? "Save GLB…" : "Save Models…" }
 
     func setAddress(_ value: String)
     {
@@ -93,26 +142,39 @@ final class EarthWorkspaceViewModel
         latitude = ""
         longitude = ""
         resolvedLocationTitle = nil
-        invalidatePrecheck()
     }
 
-    func setLatitude(_ value: String) { latitude = value; resolvedLocationTitle = nil; invalidatePrecheck() }
-    func setLongitude(_ value: String) { longitude = value; resolvedLocationTitle = nil; invalidatePrecheck() }
-    func setCaptureWidth(_ value: String) { captureWidth = value; invalidatePrecheck() }
-    func setCaptureDepth(_ value: String) { captureDepth = value; invalidatePrecheck() }
-    func setDetailError(_ value: String) { detailError = value; invalidatePrecheck() }
-    func setMaximumRequests(_ value: String) { maximumRequests = value; refreshPrecheckDisplay() }
-    func setMaximumTiles(_ value: String) { maximumTiles = value; refreshPrecheckDisplay() }
-    func setMaximumVertices(_ value: String) { maximumVertices = value; refreshPrecheckDisplay() }
-    func setMaximumTexturesMiB(_ value: String) { maximumTexturesMiB = value; refreshPrecheckDisplay() }
-    func setAPIKey(_ value: String) { apiKey = value; didEditAPIKey = true }
+    func setLatitude(_ value: String) { latitude = value; resolvedLocationTitle = nil }
+    func setLongitude(_ value: String) { longitude = value; resolvedLocationTitle = nil }
+    func setCaptureWidth(_ value: String) { captureWidth = value }
+    func setCaptureDepth(_ value: String) { captureDepth = value }
+    func setDetailError(_ value: String)
+    {
+        detailError = value
+        detail = EarthCaptureDetail.allCases.first { $0.errorMeters == value } ?? .custom
+        detailOptions = detail == .custom ? EarthCaptureDetail.allCases : [.preview, .standard, .high]
+    }
+
+    func setDetail(_ value: EarthCaptureDetail)
+    {
+        detail = value
+        if let error = value.errorMeters { detailError = error; detailOptions = [.preview, .standard, .high] }
+    }
+
+    func setMaximumVertices(_ value: String) { maximumVertices = value; modelExport.invalidate() }
+    func setMaximumTexturesMiB(_ value: String) { maximumTexturesMiB = value; modelExport.invalidate() }
+    func setCreatesOptimizedCopy(_ value: Bool)
+    {
+        guard !isLoading else { return }
+        createsOptimizedCopy = value
+        modelExport.invalidate()
+    }
 
     func resolveAddress()
     {
         guard canResolveAddress else { return }
-        invalidatePrecheck()
         activeJobID = UUID()
-        isLoading = true
+        isImporting = true
         errorMessage = nil
         status = "Resolving address…"
         let query = address
@@ -125,7 +187,6 @@ final class EarthWorkspaceViewModel
                 self?.latitude = String(format: "%.8f", location.latitude)
                 self?.longitude = String(format: "%.8f", location.longitude)
                 self?.resolvedLocationTitle = location.title
-                self?.refreshOfflineEstimate()
                 self?.status = location.title
             }
             catch is CancellationError { self?.status = "Lookup cancelled" }
@@ -134,122 +195,135 @@ final class EarthWorkspaceViewModel
                 self?.errorMessage = error.localizedDescription
                 self?.status = "Address lookup failed"
             }
-            self?.isLoading = false
+            self?.isImporting = false
             self?.importTask = nil
         }
     }
 
-    func precheckRegion()
+    func downloadRegion()
     {
         guard !isLoading else { return }
         do
         {
-            let request = try makeCaptureRequest()
-            let limits = try makeImportLimits()
-            let key = apiKey
-            let jobID = UUID()
-            activeJobID = jobID
-            isLoading = true
             errorMessage = nil
-            invalidatePrecheck()
-            status = "Inspecting selection via API…"
-            importTask = Task
-            { [weak self, recoveryService] in
-                do
-                {
-                    let result = try await recoveryService.precheck(request: request, apiKey: key, limits: limits)
-                    { [weak self] progress in
-                        Task
-                        { @MainActor [weak self] in
-                            guard let self, activeJobID == jobID, isLoading else { return }
-                            status = "API inspection: \(progress.sourceRequests)/\(request.maximumSourceRequests) requests · \(progress.downloadedTiles) GLBs read"
-                        }
+            downloads.start(request: try makeDownloadRequest(), apiKey: apiKey)
+        }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    func prepareDownloadedModels()
+    {
+        guard !isLoading, let archive = downloads.archive, archive.state == .downloaded else { return }
+        do
+        {
+            let profile = try makePreparationProfile(name: "Example preview")
+            let service = preparationService
+            let job = UUID()
+            activeJobID = job
+            startLoad(title: "Downloaded Region", accessURL: archive.directoryURL, refreshPreparedModels: true, failureStatus: "Model preparation failed · source download retained")
+            { [weak self] _ in
+                let catalog = try await service.prepare(archive: archive, profile: profile)
+                { [weak self] progress in
+                    Task
+                    { @MainActor [weak self] in
+                        guard let self, activeJobID == job, isImporting else { return }
+                        status = progress.phase == .inspecting ? "Inspecting source tiles: \(progress.processedPlacements.formatted()) / \(progress.totalPlacements.formatted())" : "Preparing models: \(progress.completedModels.formatted()) written"
                     }
-                    try Task.checkCancellation()
-                    guard self?.activeJobID == jobID else { throw CancellationError() }
-                    self?.precheckResult = result
-                    self?.refreshPrecheckDisplay()
                 }
-                catch is CancellationError { self?.status = "API inspection cancelled" }
-                catch
-                {
-                    self?.errorMessage = error.localizedDescription
-                    self?.status = "API inspection failed"
-                }
-                let root = await recoveryService.mostRecentDownload()
-                let history = await recoveryService.estimateHistory()
-                self?.estimateHistory = history
-                self?.refreshOfflineEstimate()
-                self?.recoveryRootURL = root
-                self?.hasRecoverableDownload = root != nil
-                self?.isLoading = false
-                self?.activeJobID = UUID()
-                self?.importTask = nil
+                return try await EarthWorkspaceSource.firstPreparedModel(catalog)
             }
         }
         catch { errorMessage = error.localizedDescription }
     }
 
-    func captureRegion()
+    func refreshPreparedAvailability()
+    {
+        preparedModels.discover(archive: downloads.archive, service: preparationService)
+    }
+
+    func openPreparedModels()
+    {
+        guard !isLoading, preparedModels.availableSourceRootURL == downloads.archive?.rootSourceURL,
+              let catalog = preparedModels.availableCollection else { return }
+        startLoad(title: "Downloaded Region", accessURL: catalog.directoryURL)
+        { _ in try await EarthWorkspaceSource.firstPreparedModel(catalog) }
+    }
+
+    func previewPreparedModel(_ id: Int)
+    {
+        guard !isLoading, let catalog = preparedModels.collection else { return }
+        startLoad(title: title, accessURL: nil, preservesSectionSelection: true)
+        { _ in try await EarthWorkspaceSource(capture: catalog.importModel(id: id), collection: nil, sectionID: id, preparedCollection: catalog) }
+    }
+
+    func showPreparedModels()
+    {
+        if let folder = preparedModels.collection?.directoryURL { Task { await appFiles.reveal(folder) } }
+    }
+
+    func selectAllPreparedModels() { preparedModels.selectAll(); modelExport.invalidate() }
+    func selectNoPreparedModels() { preparedModels.selectNone(); modelExport.invalidate() }
+    func setPreparedModelIncluded(_ id: Int, included: Bool) { preparedModels.include(id, value: included); modelExport.invalidate() }
+
+    func setExportMode(_ mode: EarthModelExportMode)
     {
         guard !isLoading else { return }
-        do
-        {
-            let request = try makeCaptureRequest()
-            let limits = try makeImportLimits()
-            if let precheckResult, precheckResult.matchesSelection(request)
-            {
-                guard precheckDisplay?.allowsCapture != false else { throw EarthImportError.limitExceeded("API inspection is incomplete or exceeds the current limits. Adjust limits and inspect again if needed.") }
-                if precheckResult.hasReusableSources
-                {
-                    let importer = EarthCaptureImporter(limits: limits)
-                    activeJobID = UUID()
-                    startLoad(title: resolvedLocationTitle ?? "Captured Region", accessURL: nil, refreshRecovery: true)
-                    { try await importer.importPrechecked(precheck: precheckResult) }
-                    return
-                }
-            }
-            let recoveryService = recoveryService
-            let key = apiKey
-            let jobID = UUID()
-            activeJobID = jobID
-            startLoad(title: resolvedLocationTitle ?? "Captured Region", accessURL: nil, refreshRecovery: true)
-            { [weak self] in
-                try await recoveryService.capture(request: request, apiKey: key, limits: limits)
-                { [weak self] progress in
-                    Task
-                    { @MainActor [weak self] in
-                        guard let self, activeJobID == jobID, isLoading else { return }
-                        status = "\(progress.sourceRequests)/\(request.maximumSourceRequests) requests · \(progress.downloadedTiles) tiles downloaded · \(String(format: "%.1f MiB", Double(progress.downloadedBytes) / 1048576))"
-                    }
-                }
-            }
-        }
+        modelExport.setMode(mode)
+        if mode == .combinedGLB { checkCombinedExport() }
+    }
+
+    func checkCombinedExport()
+    {
+        guard !isLoading, let catalog = preparedModels.collection else { return }
+        do { modelExport.check(collection: catalog, selection: preparedModels.selection, destination: try makePreparationProfile(name: "Combined asset")) }
         catch { errorMessage = error.localizedDescription }
     }
 
     func saveCapture()
     {
-        guard !isLoading, let capture else { return }
+        guard canSaveCapture, let capture else { return }
+        let prepared = preparedModels.collection
+        let modelSelection = preparedModels.selection
+        let combinesModels = prepared != nil && modelExport.mode == .combinedGLB
+        let selected: EarthCaptureCollection?
+        do { selected = prepared == nil ? try collection?.selecting(selectedSectionIDs) : nil }
+        catch { errorMessage = error.localizedDescription; return }
         let panel = NSSavePanel()
-        panel.title = "Save Capture Folder"
-        panel.nameFieldStringValue = "Earth Capture"
+        panel.title = combinesModels ? "Save Combined GLB" : "Save Models Folder"
+        panel.nameFieldStringValue = combinesModels ? "Earth Models.glb" : "Earth Models"
+        if combinesModels { panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data] }
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let destination = panel.url else { return }
-        activeJobID = UUID()
-        isLoading = true
+        let job = UUID()
+        activeJobID = job
+        isImporting = true
         errorMessage = nil
-        status = "Saving capture…"
+        status = combinesModels ? "Saving combined GLB…" : "Saving capture…"
         importTask = Task
-        { [weak self, captureStore] in
-            let scoped = destination.startAccessingSecurityScopedResource()
-            defer { if scoped { destination.stopAccessingSecurityScopedResource() } }
+        { [weak self, captureStore, appFiles] in
             do
             {
-                let root = try await captureStore.save(capture: capture, directoryURL: destination)
+                let access = try await appFiles.accessForExport(destination)
+                defer { withExtendedLifetime(access) {} }
+                let root: URL
+                if combinesModels
+                {
+                    guard let self else { throw CancellationError() }
+                    root = try await modelExport.saveCombined(to: destination)
+                    { [weak self] progress in
+                        Task
+                        { @MainActor [weak self] in
+                            guard let self, activeJobID == job, isImporting else { return }
+                            status = "Writing combined GLB: \(progress.completedModels.formatted()) / \(progress.totalModels.formatted()) models"
+                        }
+                    }
+                }
+                else if let prepared { root = try await captureStore.save(collection: prepared, selection: modelSelection, directoryURL: destination) }
+                else if let selected { root = try await captureStore.save(collection: selected, directoryURL: destination) }
+                else { root = try await captureStore.save(capture: capture, directoryURL: destination) }
                 self?.savedRootURL = root
                 self?.hasSavedCapture = true
-                self?.status = capture.incompleteReason == nil ? "Capture saved" : "Partial capture saved"
+                self?.status = prepared?.state == .partial ? "Partial models saved" : (combinesModels ? "Combined GLB saved" : (capture.incompleteReason == nil ? "Capture saved" : "Partial capture saved"))
             }
             catch is CancellationError { self?.status = "Save cancelled" }
             catch
@@ -257,36 +331,14 @@ final class EarthWorkspaceViewModel
                 self?.errorMessage = error.localizedDescription
                 self?.status = "Save failed"
             }
-            self?.isLoading = false
+            self?.isImporting = false
             self?.importTask = nil
         }
     }
 
     func showSavedCapture()
     {
-        if let savedRootURL { NSWorkspace.shared.activateFileViewerSelecting([savedRootURL]) }
-    }
-
-    func openLastDownload()
-    {
-        guard !isLoading, let recoveryRootURL else { return }
-        load(fileURL: recoveryRootURL, accessURL: recoveryRootURL.deletingLastPathComponent())
-    }
-
-    func showDownloads()
-    {
-        if let recoveryRootURL { NSWorkspace.shared.activateFileViewerSelecting([recoveryRootURL]) }
-    }
-
-    func loadReference()
-    {
-        guard let fixtures = Bundle.main.url(forResource: "Fixtures", withExtension: nil)
-        else
-        {
-            errorMessage = "The bundled reference capture is missing."
-            return
-        }
-        load(fileURL: fixtures.appendingPathComponent("Orientation/tileset.json"), accessURL: fixtures)
+        if let savedRootURL { Task { await appFiles.reveal(savedRootURL) } }
     }
 
     func chooseGLB()
@@ -314,9 +366,12 @@ final class EarthWorkspaceViewModel
 
     func cancelImport()
     {
+        downloads.pause()
+        preparedModels.cancel()
+        modelExport.cancel()
         importTask?.cancel()
         activeJobID = UUID()
-        if isLoading { status = "Cancelling…" }
+        if isImporting { status = "Cancelling…" }
     }
 
     func resetView()
@@ -328,57 +383,54 @@ final class EarthWorkspaceViewModel
     private func load(fileURL: URL, accessURL: URL)
     {
         guard !isLoading else { return }
+        let limits = try? makeImportLimits()
+        activeJobID = UUID()
+        startLoad(title: fileURL.deletingPathExtension().lastPathComponent, accessURL: accessURL)
+        { [appFiles] access in
+            guard let access else { throw EarthAppFilesError.invalidLocation }
+            if try await appFiles.isPreparedCollection(directoryURL: accessURL, access: access)
+            { return try await EarthWorkspaceSource.firstPreparedModel(EarthPreparedCollection.open(directoryURL: accessURL)) }
+            guard let limits else { throw EarthImportError.invalidContent("Set valid Advanced limits for the local import.") }
+            let importer = EarthCaptureImporter(limits: limits)
+            if fileURL.pathExtension.lowercased() == "json"
+            { return try await EarthWorkspaceSource.firstModel(importer.prepareCollection(fileURL: fileURL), limits: limits) }
+            return try await EarthWorkspaceSource(capture: importer.importFile(fileURL: fileURL), collection: nil, sectionID: nil)
+        }
+    }
+
+    func selectAllSections() { selectedSectionIDs = Set(modelSectionItems.map(\.id)); refreshModelSections() }
+    func selectNoSections() { selectedSectionIDs = []; refreshModelSections() }
+    func setSectionIncluded(_ id: Int, included: Bool)
+    {
+        if included { selectedSectionIDs.insert(id) } else { selectedSectionIDs.remove(id) }
+        refreshModelSections()
+    }
+
+    func previewSection(_ id: Int)
+    {
+        guard !isLoading, let collection, let section = collection.sections.first(where: { $0.id == id }) else { return }
         do
         {
             let importer = EarthCaptureImporter(limits: try makeImportLimits())
-            activeJobID = UUID()
-            startLoad(title: fileURL.deletingPathExtension().lastPathComponent, accessURL: accessURL)
-            {
-                try await importer.importFile(fileURL: fileURL)
-            }
+            startLoad(title: title, accessURL: nil, preservesSectionSelection: true)
+            { _ in try await EarthWorkspaceSource(capture: importer.importSection(section), collection: collection, sectionID: id) }
         }
         catch { errorMessage = error.localizedDescription }
     }
 
-    private func invalidatePrecheck()
+    private func refreshModelSections()
     {
-        precheckResult = nil
-        precheckDisplay = nil
-        refreshOfflineEstimate()
+        modelSectionItems = collection?.sections.map { EarthModelSectionDisplayItem(id: $0.id, title: $0.name, isIncluded: selectedSectionIDs.contains($0.id), isPreviewed: $0.id == previewedSectionID) } ?? []
+        selectedSectionCount = selectedSectionIDs.count
+        modelSectionsSummary = "\(modelSectionItems.count) model sections · \(selectedSectionCount) selected for saving"
     }
 
-    private func refreshPrecheckDisplay()
-    {
-        refreshOfflineEstimate()
-        guard let precheckResult else { precheckDisplay = nil; return }
-        do
-        {
-            let request = try makeCaptureRequest()
-            guard precheckResult.matchesSelection(request) else { invalidatePrecheck(); status = "Selection changed; inspect again if needed"; return }
-            precheckDisplay = try EarthCapturePrecheckDisplay(precheck: precheckResult, request: request, limits: makeImportLimits())
-        }
-        catch { precheckDisplay = EarthCapturePrecheckDisplay(invalidLimits: error.localizedDescription) }
-        status = precheckDisplay?.allowsCapture == true ? "API inspection ready" : "API inspection needs attention"
-    }
-
-    private func refreshOfflineEstimate()
-    {
-        let width = Double(captureWidth)
-        let depth = Double(captureDepth)
-        let area = width.flatMap { width in depth.map { width * $0 } }
-        offlineEstimateDisplay = EarthOfflineEstimateDisplay(areaSquareMeters: area, limits: try? makeImportLimits(), request: try? makeCaptureRequest(), history: estimateHistory)
-    }
-
-    private func makeCaptureRequest() throws -> EarthCaptureRequest
+    private func makeDownloadRequest() throws -> EarthDownloadRequest
     {
         guard let latitudeValue = Double(latitude), let longitudeValue = Double(longitude),
               let width = Double(captureWidth), let depth = Double(captureDepth), let error = Double(detailError)
         else { throw EarthImportError.invalidContent("Enter valid coordinates, region dimensions, and detail error.") }
-        guard let requestLimit = Int(maximumRequests.trimmingCharacters(in: .whitespacesAndNewlines))
-        else { throw EarthImportError.invalidContent("Maximum Requests must be a positive whole number.") }
-        guard let tileLimit = Int(maximumTiles.trimmingCharacters(in: .whitespacesAndNewlines))
-        else { throw EarthImportError.invalidContent("Maximum Tiles must be a positive whole number.") }
-        return try EarthCaptureRequest(center: EarthGeographicOrigin(latitude: latitudeValue, longitude: longitudeValue), widthMeters: width, depthMeters: depth, maximumGeometricErrorMeters: error, maximumSourceRequests: requestLimit, maximumSelectedTiles: tileLimit)
+        return try EarthDownloadRequest(center: EarthGeographicOrigin(latitude: latitudeValue, longitude: longitudeValue), widthMeters: width, depthMeters: depth, maximumGeometricErrorMeters: error)
     }
 
     private func makeImportLimits() throws -> EarthImportLimits
@@ -393,23 +445,47 @@ final class EarthWorkspaceViewModel
         return EarthImportLimits(maximumVertices: vertexLimit, maximumDecodedTextureBytes: textureMiB * 1024 * 1024)
     }
 
+    private func makePreparationProfile(name: String) throws -> EarthPreparationProfile
+    {
+        let limits = try makeImportLimits()
+        return try EarthPreparationProfile(
+            name: name,
+            maximumVerticesPerModel: limits.maximumVertices,
+            maximumIndicesPerModel: limits.maximumVertices * 3,
+            maximumDecodedTextureBytesPerModel: limits.maximumDecodedTextureBytes,
+            maximumTextureDimension: limits.maximumTextureDimension,
+            maximumSourceBytesPerModel: limits.maximumSourceBytes,
+            maximumNodesPerPayload: limits.maximumNodes,
+            appearancePolicy: createsOptimizedCopy ? .optimizedCopy : .preserveAppearance
+        )
+    }
+
     private func startLoad(
         title: String,
         accessURL: URL?,
-        refreshRecovery: Bool = false,
-        operation: @escaping @Sendable () async throws -> EarthCapture
+        refreshPreparedModels: Bool = false,
+        preservesSectionSelection: Bool = false,
+        failureStatus: String = "Import failed",
+        operation: @escaping @Sendable (EarthFileAccess?) async throws -> EarthWorkspaceSource
     )
     {
         guard !isLoading else { return }
-        isLoading = true
+        isImporting = true
         errorMessage = nil
         status = "Preparing \(title)…"
         let existingRenderer = renderer
+        let appFiles = appFiles
+        let existingFolderAccess = preparedFolderAccess
         let worker = Task.detached(priority: .userInitiated)
         {
-            let scoped = accessURL?.startAccessingSecurityScopedResource() == true
-            defer { if scoped { accessURL?.stopAccessingSecurityScopedResource() } }
-            let capture = try await operation()
+            let access: EarthFileAccess?
+            if let accessURL { access = try await appFiles.accessForReading(accessURL) }
+            else { access = existingFolderAccess }
+            defer { withExtendedLifetime(access) {} }
+            var source = try await operation(access)
+            if source.preparedCollection != nil { source.folderAccess = access ?? existingFolderAccess }
+
+            let capture = source.capture
             try Task.checkCancellation()
             let renderer: EarthPreviewRenderer
             if let existingRenderer
@@ -424,11 +500,10 @@ final class EarthWorkspaceViewModel
             }
             let prepared = try renderer.prepare(capture: capture)
             try Task.checkCancellation()
-            return (capture, renderer, prepared)
+            return (source, renderer, prepared)
         }
-        let recoveryService = recoveryService
         importTask = Task
-        { [weak self, recoveryService] in
+        { [weak self] in
             do
             {
                 let result = try await withTaskCancellationHandler
@@ -439,41 +514,48 @@ final class EarthWorkspaceViewModel
                 }
                 try Task.checkCancellation()
                 guard let self else { return }
-                capture = result.0
+                try await preparedModels.attach(result.0.preparedCollection, previewedID: result.0.sectionID, preservingSelection: preservesSectionSelection)
+                try Task.checkCancellation()
+                if !preservesSectionSelection { modelExport.invalidate() }
+                capture = result.0.capture
+                preparedFolderAccess = result.0.folderAccess
+                collection = result.0.collection
+                previewedSectionID = result.0.sectionID
+                if !preservesSectionSelection { selectedSectionIDs = Set(collection?.sections.map(\.id) ?? []) }
+                refreshModelSections()
                 renderer = result.1
                 result.1.publish(scene: result.2)
                 self.title = title
-                let dimensions = result.0.bounds.dimensions
-                summary = String(format: "%d meshes · %d triangles · %.1f × %.1f × %.1f m", result.0.meshes.count, result.0.triangleCount, dimensions.x, dimensions.y, dimensions.z)
-                attribution = result.0.attributions.joined(separator: "; ")
-                incompleteCaptureMessage = result.0.incompleteReason
+                let dimensions = result.0.capture.bounds.dimensions
+                summary = result.0.preparedCollection.map { "\($0.modelCount.formatted()) prepared models · previewing one model" } ?? collection.map { "\($0.sections.count) model sections · previewing one model" } ?? String(format: "%.1f × %.1f × %.1f m", dimensions.x, dimensions.y, dimensions.z)
+                attribution = result.0.capture.attributions.joined(separator: "; ")
+                previewCoverageWarning = result.0.capture.incompleteReason.map
+                { "Preview coverage: \($0) Full region coverage is unverified. Downloaded files are retained." }
+                previewAppearanceNotice = result.0.capture.preparationProfile?.appearancePolicy == .optimizedCopy
+                    ? "Optimized copy · Cropped textures may look different at a distance, and lighting on split surfaces may differ."
+                    : nil
                 hasPreview = true
                 hasSavedCapture = false
                 savedRootURL = nil
                 previewRevision &+= 1
-                status = result.0.incompleteReason == nil ? "Ready" : "Partial capture recovered"
+                status = result.0.preparedCollection?.state == .partial ? "Models partially prepared" : (result.0.capture.incompleteReason == nil ? "Ready" : "Preview · coverage unverified")
             }
             catch is CancellationError
             {
-                self?.status = refreshRecovery ? "Capture cancelled" : "Import cancelled"
+                self?.status = refreshPreparedModels ? "Model preparation cancelled · source download retained" : "Import cancelled"
             }
             catch
             {
                 self?.errorMessage = error.localizedDescription
-                self?.status = "Import failed"
+                self?.status = failureStatus
             }
-            if refreshRecovery
-            {
-                let root = await recoveryService.mostRecentDownload()
-                let history = await recoveryService.estimateHistory()
-                self?.estimateHistory = history
-                self?.refreshOfflineEstimate()
-                self?.recoveryRootURL = root
-                self?.hasRecoverableDownload = root != nil
-            }
-            self?.isLoading = false
+            self?.isImporting = false
             self?.activeJobID = UUID()
             self?.importTask = nil
+            // Preparation can commit models before failing or being cancelled.
+            // Refresh after the worker settles so those files can be reopened.
+            if refreshPreparedModels { self?.refreshPreparedAvailability() }
+            self?.releaseHiddenPreview()
         }
     }
 }
