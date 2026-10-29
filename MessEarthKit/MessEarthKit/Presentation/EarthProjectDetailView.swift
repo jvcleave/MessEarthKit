@@ -12,7 +12,7 @@ struct EarthProjectDetailView: View
         {
             captureControls
                 .frame(minWidth: 320, idealWidth: 360, maxWidth: 440)
-            EarthProjectMapView(selection: project.confirmation, inputError: project.mapInputError)
+            EarthProjectMapView(project: project, library: library)
                 .frame(minWidth: 400, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(minWidth: 880)
@@ -38,37 +38,37 @@ struct EarthProjectDetailView: View
                 TextField("Title", text: Binding(get: { project.title }, set: project.setTitle))
             }
             .disabled(project.isBusy)
-            Section("Capture area")
+            Section("Find a starting point")
             {
-                TextField("Address", text: Binding(get: { project.draft.address }, set: project.setAddress))
-                    .onSubmit { library.updateMap(project.id) }
-                Picker("Detail", selection: Binding(get: { project.draft.detail }, set: project.setDetail))
+                LabeledContent("Address")
                 {
-                    ForEach(EarthProjectDetail.allCases) { Text($0.title).tag($0) }
+                    EarthAddressField(
+                        text: project.searchAddress,
+                        onChange: project.setAddress,
+                        onSubmit: { library.updateMap(project.id) }
+                    )
                 }
-                TextField("Width (m)", text: Binding(get: { project.draft.widthMeters }, set: project.setWidth))
-                TextField("Height (m)", text: Binding(get: { project.draft.heightMeters }, set: project.setHeight))
+                Button("Update Map") { library.updateMap(project.id) }.disabled(!library.canStartWork)
+                Button("Add Location", action: project.addLocation).disabled(!library.canStartWork || project.mapCenter == nil)
+                Text("Searching and browsing move the map. Add Location creates a capture area there.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             .disabled(project.isBusy)
-            Section
+            if let location = project.editingLocation
             {
-                Button("Update Map") { library.updateMap(project.id) }.disabled(!library.canStartWork)
-                Button("Download Tiles") { library.download(project.id) }
-                    .disabled(!project.canDownload || !project.hasAPIKey || !library.canStartWork)
-                Text("Width, height and detail update the mapped selection as you edit.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if project.phase != .idle, project.operationCaptureID == nil
-                {
-                    ProgressView(project.progressText).controlSize(.small)
-                    if project.phase != .deleting { Button("Cancel", action: project.pause) }
-                }
-                if project.operationCaptureID == nil, let error = project.jobError
-                { Text(error).foregroundStyle(.red).textSelection(.enabled) }
-                if !project.hasAPIKey
-                {
-                    Text("Add an API key in Settings to download.").font(.caption).foregroundStyle(.secondary)
-                    Button("Open Settings", action: library.showSettings)
-                }
+                EarthLocationEditorView(location: location, project: project, library: library)
+            }
+            if project.phase != .idle, project.operationCaptureID == nil
+            {
+                ProgressView(project.progressText).controlSize(.small)
+                if project.phase != .deleting { Button("Cancel", action: project.pause) }
+            }
+            if project.operationCaptureID == nil, let error = project.jobError
+            { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            if !project.hasAPIKey
+            {
+                Text("Add an API key in Settings to download.").font(.caption).foregroundStyle(.secondary)
+                Button("Open Settings", action: library.showSettings)
             }
             if let error = project.persistenceError
             {

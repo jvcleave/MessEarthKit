@@ -22,6 +22,7 @@
 				Storage/Tests/EarthProjectDeletionTests.swift,
 				Storage/Tests/EarthProjectStoreTests.swift,
 				Workflow/Tests/EarthProjectCaptureTests.swift,
+				Workflow/Tests/EarthMapAreaEditingTests.swift,
 				Workflow/Tests/EarthRegionPreviewTests.swift,
 			);
 			target = 0322DC0D30918E2700993292 /* MessEarthKit */;

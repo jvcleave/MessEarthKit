@@ -3,26 +3,18 @@ import MessEarthKit
 
 struct EarthConfirmedSelection: Sendable, Equatable
 {
-    let draft: EarthProjectDraft
-    let location: EarthProjectLocation
+    let locationID: UUID
+    let area: EarthLocationArea
+    let detail: EarthProjectDetail
     let request: EarthDownloadRequest
 
-    init(draft: EarthProjectDraft, location: EarthProjectLocation) throws
+    init(location: EarthLocationRecord) throws
     {
-        guard location.address == draft.address else { throw EarthProjectCaptureError.changedSelection }
-        self.draft = draft
-        self.location = location
-        request = try Self.request(draft: draft, origin: location.origin)
-    }
-
-    static func request(draft: EarthProjectDraft, origin: EarthGeographicOrigin) throws -> EarthDownloadRequest
-    {
-        try draft.validate()
-        guard !draft.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-              let width = Double(draft.widthMeters), let height = Double(draft.heightMeters),
-              width.isFinite, height.isFinite, width > 0, height > 0
-        else { throw EarthProjectCaptureError.invalidInput }
-        return try EarthDownloadRequest(center: origin, widthMeters: width, depthMeters: height, maximumGeometricErrorMeters: draft.detail.errorMeters)
+        guard let detail = location.variantDetail else { throw EarthProjectStoreError.changedLocation }
+        locationID = location.id
+        area = location.area
+        self.detail = detail
+        request = try area.request(detail: detail)
     }
 }
 
@@ -34,7 +26,7 @@ enum EarthProjectCaptureError: Error, LocalizedError, Sendable
     {
         switch self
         {
-            case .invalidInput: "Enter an address and positive finite Width and Height values."
+            case .invalidInput: "Enter positive finite Width and Height values for this location."
             case .changedSelection: "The project selection changed. Review its map again before downloading."
             case .workInProgress: "Wait for the current operation to finish before deleting."
         }
@@ -45,7 +37,7 @@ enum EarthProjectCaptureError: Error, LocalizedError, Sendable
 /// operations. Production uses the existing services; tests use local sources.
 actor EarthProjectCaptureService
 {
-    typealias Lookup = @Sendable (String) async throws -> EarthProjectLocation
+    typealias Lookup = @Sendable (String) async throws -> EarthMapSearchResult
     typealias Acquire = @Sendable (EarthSourceArchive, String, @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthSourceArchive
     typealias Prepare = @Sendable (EarthSourceArchive, EarthPreparationProfile, @escaping @Sendable (EarthPreparationProgress) -> Void) async throws -> EarthPreparedCollection
 
@@ -66,31 +58,29 @@ actor EarthProjectCaptureService
         self.prepare = prepare
     }
 
-    /// Map confirmation is independent of credentials and Google transport.
-    func confirm(draft: EarthProjectDraft) async throws -> EarthConfirmedSelection
+    /// Searching moves a map starting point without creating or moving areas.
+    func search(address: String) async throws -> EarthMapSearchResult
     {
-        // Validate the SDK's geographic dimension domain before lookup I/O.
-        _ = try EarthConfirmedSelection.request(draft: draft, origin: EarthGeographicOrigin(latitude: 0, longitude: 0))
+        guard !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              try await store.record(id: id).searchAddress == address else { throw EarthProjectCaptureError.invalidInput }
         let record = try await store.record(id: id)
-        guard record.draft == draft else { throw EarthProjectCaptureError.changedSelection }
-        let location: EarthProjectLocation
-        if let cached = record.resolvedLocation, cached.address == draft.address { location = cached }
-        else { location = try await lookup(draft.address) }
+        if let cached = record.searchResult, cached.address == address { return cached }
+        let result = try await lookup(address)
         try Task.checkCancellation()
-        let selection = try EarthConfirmedSelection(draft: draft, location: location)
-        guard try await store.record(id: id).draft == draft else { throw EarthProjectCaptureError.changedSelection }
-        _ = try await store.recordLocation(id: id, location: location)
-        return selection
+        _ = try await store.recordSearch(id: id, result: result)
+        return result
     }
 
-    /// A committed, resumable project pointer precedes the first Google request.
     func start(selection: EarthConfirmedSelection) async throws -> EarthSourceArchive
     {
-        guard try await store.record(id: id).draft == selection.draft else { throw EarthProjectCaptureError.changedSelection }
+        let record = try await store.record(id: id)
+        guard let location = record.locations.first(where: { $0.id == selection.locationID }),
+              location.area == selection.area, location.variantDetail == selection.detail
+        else { throw EarthProjectStoreError.changedLocation }
         let directory = try await files.newArtifactDirectory(projectID: id, kind: .sources)
         let archive = try await EarthSourceArchive.create(request: selection.request, directoryURL: directory)
         guard let captureID = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
-        _ = try await store.recordCapture(id: id, capture: .init(id: captureID, request: archive.request), expectedDraft: selection.draft)
+        _ = try await store.recordCapture(id: id, capture: .init(id: captureID, request: archive.request), selection: selection)
         return archive
     }
 

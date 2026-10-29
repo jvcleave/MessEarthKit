@@ -1,7 +1,7 @@
 # MessEarth app storage and file-access policy
 
-Status: app files, schema-2 project/schema-1 settings stores and the MapKit-confirmed
-download/preparation flow and whole-region preview are implemented. Export UI is next.
+Status: app files, schema-3 project/schema-1 settings stores and the MapKit-confirmed
+download/preparation flow and whole-region preview are implemented. Location/model controls and direct map editing are implemented; Export UI remains.
 Updated: 2026-10-29 (America/New_York).
 Scope: MessEarthKitExample app-owned storage and authorization.
 
@@ -79,12 +79,15 @@ captures/preparations/outputs. Other projects, settings, Keychain and the global
 request ledger are outside its scope. This also permits deleting a listed project
 whose metadata is unreadable; no schema rewrite is needed to remove its folder.
 
-Variant deletion serializes with project metadata writes. It detaches the variant
-and updates internal selection without replacing the editor/location/title. The
-last deletion leaves a draft with no selected capture. Only its UUID source and
-recorded preparation are removed; a preparation still referenced by another
+Variant and location deletion serialize with project metadata writes. A location
+deletion detaches every nested variant in one operation and uses one Trash bundle.
+Variant deletion updates internal selection without replacing its area or title. The
+last variant deletion clears active capture selection when none remain, but the
+location stays frozen. Deleting a location preserves other areas and map search.
+Only the removed variants' UUID sources and
+recorded preparations are removed; a preparation still referenced by another
 variant is retained. EarthAppFiles validates managed paths and rejects symlinks,
-commits metadata first, stages those directories in a unique Deleted-Variant
+commits metadata first, stages those directories in a unique Deleted-Captures
 folder within the project, then moves that bundle to Trash. Normal failures roll
 back paths and original metadata. An interrupted operation can leave a retained
 deletion folder; partial rollback reports an explicit error. There is no automatic
@@ -92,8 +95,8 @@ adoption, orphan scan or silent cleanup. Sources are never moved before their
 live metadata references have been detached.
 
 Delete controls are disabled during active work and while the target project is
-saving. Project deletion waits
-for queued saves; the store blocks subsequent writes to prevent resurrection.
+saving. Project deletion waits for queued saves; the store blocks subsequent
+writes to prevent resurrection.
 Workers and GPU scenes must be settled/released before deletion. Once confirmed
 file mutation starts, cancellation is unavailable. Verification injects a Trash
 operation confined to temporary fixtures; it never deletes actual user projects
@@ -166,17 +169,28 @@ authorization call sites through it; add no old-root bridge or fallback to the
 former workspace UI.
 
 The implemented owner is `Storage/EarthAppFiles.swift` in the example app. The
-project library supplies persistent IDs from schema-2 `project.json` records.
+project library supplies persistent IDs from schema-3 `project.json` records.
 There is no newest-archive startup scan.
 The old app inspection/recovery/calibration route has been removed. SDK/public
 capture, preparation and export contracts are unchanged.
 
-`EarthProjectStore` owns the independent title, editor draft/location, capture
-variants and selected capture ID. Each variant freezes draft/location/request and
-has its own prepared reference; selected source/preparation are computed from the
-catalog. Title/draft writes serialize together across actor suspensions. Activating
-a source for a card's Preview/Resume validates it before committing and preserves
-the editor/map. Only explicit Restore Capture Area loads its frozen settings.
+`EarthProjectStore` owns the independent project title/map-search state, locations,
+nested detail variants, editing location ID and active capture ID. Each location
+has its own center/Width/Height, a required nullable frozenAt and a required nullable
+pending variant detail. The first source registration freezes area and records
+variant identity atomically before transport. Freeze survives pause/failure and
+last-variant deletion. Copies get fresh IDs with no frozen state or artifacts.
+Search, editor and workflow selection serialize independently. A frozen area's
+geometry is immutable; validation requires all nested variants to reference that
+location ID and identical geometry. A source activation for Preview/Resume validates
+it first while preserving search, editing location and pending variant settings.
+Show on Map changes editor focus explicitly, without rewriting any area.
+`EarthMapAreaEditing` owns transient gesture snapshots with location ID, original
+area and live preview. It performs no I/O. Gesture release checks identity, original
+area and frozen state before the project owner queues one normal atomic editor
+save. Escape/navigation/gesture cancellation discard the preview. Active map edits
+block acquisition, preparation, refresh and deletion. Camera browsing remains
+separate, and map graphics are inline controls rather than modal presentations.
 Journal-only card status reads leave selection and metadata untouched; an
 unavailable inactive source reports its own card error. Activation cannot rewrite
 another variant. Typed UUIDs derive relative artifact references. Current nullable fields must be present as null or a value. Loading checks
@@ -199,7 +213,7 @@ Verification should exercise an injected root, current metadata save/reopen,
 explicit corrupt/version rejection, confinement and authorization/job lifetime.
 Reuse existing SDK acquisition/preparation/export tests for large-file behavior;
 do not create an app-files test matrix that repeats their implementation. Build
-the affected macOS example after code changes. Eighteen headless tests compile the
+the affected macOS example after code changes. Twenty-one headless tests compile the
 actual app storage/workflow/renderer sources through the internal `MessEarthKitAppFilesTests` target;
 the tests are excluded from the Xcode app target. They cover metadata preservation
 on rejected writes/new-destination publication, confinement/symlink/SQLite sidecar
@@ -217,3 +231,11 @@ metadata was backed up and compared before an atomic app-files write. Existing
 source/prepared references reopened unchanged. No old-format decoder or automatic
 migration ships in the app; this approval does not introduce ongoing compatibility
 policy or permission to discover/delete unrelated artifacts.
+
+The user separately approved preserving the existing schema-2 draft for the
+schema-3 location hierarchy. With the app closed and original bytes unchanged,
+a validated candidate was written atomically through EarthAppFiles and reopened
+with the real store. Its title, search/resolved point, dimensions and detail were
+retained as one editable location; it had no captures. The original metadata
+backup is retained outside the repository and the temporary helper was removed.
+No schema-2 runtime reader, automatic update or artifact discovery was added.

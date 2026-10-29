@@ -2,7 +2,7 @@ import MessEarthKit
 import SwiftUI
 
 /// Each saved acquisition owns its actions. Opening files or a preview leaves
-/// the editor alone; restoring the capture area is a separate explicit action.
+/// the editor alone; adjusting an area creates an independent editable location.
 struct EarthProjectCapturesView: View
 {
     let project: EarthProjectViewModel
@@ -10,23 +10,30 @@ struct EarthProjectCapturesView: View
 
     var body: some View
     {
-        Section("Capture variants")
-        {
-            if project.hasNewCaptureDraft
+        ForEach(project.locations)
+        { location in
+            Section(location.displayTitle)
             {
-                VStack(alignment: .leading, spacing: 6)
+                HStack
                 {
-                    Label("\(project.draft.detail.title) · New variant", systemImage: "plus.circle")
-                        .font(.headline)
-                    Text("Draft · \(project.draft.widthMeters) × \(project.draft.heightMeters) m")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Text("Download Tiles saves this as a separate capture.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.padding(.vertical, 4)
-            }
-            ForEach(project.captures.reversed())
-            { variant in
-                EarthProjectCaptureCard(variant: variant, project: project, library: library)
+                    Text(location.isFrozen ? "Frozen area" : "Draft area").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Show on Map") { project.showLocation(location.id) }.disabled(!library.canStartWork)
+                    Button(role: .destructive) { library.requestLocationDeletion(project.id, locationID: location.id) } label: { Image(systemName: "trash") }
+                        .buttonStyle(.borderless).help("Delete Location").accessibilityLabel("Delete location \(location.displayTitle)")
+                        .disabled(!library.canRequestDeletion || project.isSaving)
+                }
+                Text("\(location.area.widthMeters) × \(location.area.heightMeters) m").font(.caption)
+                HStack
+                {
+                    Button("Copy Location") { project.copyLocation(location.id) }
+                    if location.isFrozen, location.variantDetail == nil
+                    { Button("Add Variant") { project.addVariant(location.id) } }
+                }.disabled(!library.canStartWork)
+                if let detail = location.variantDetail
+                { Text("\(detail.title) variant · Not downloaded").font(.caption).foregroundStyle(.secondary) }
+                ForEach(location.variants.reversed())
+                { variant in EarthProjectCaptureCard(variant: variant, project: project, library: library) }
             }
         }
     }
@@ -50,7 +57,6 @@ private struct EarthProjectCaptureCard: View
                     .buttonStyle(.borderless).help("Delete Variant").accessibilityLabel("Delete variant \(variant.title)")
                     .disabled(!library.canRequestDeletion || project.isSaving)
             }
-            if !variant.draft.address.isEmpty { Text(variant.draft.address).font(.caption).foregroundStyle(.secondary) }
             Text(variant.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
                 .font(.caption).foregroundStyle(.secondary)
             Text(project.captureStatus(variant.id)).font(.subheadline)
@@ -83,9 +89,13 @@ private struct EarthProjectCaptureCard: View
                 }
                 else { Button("Preview", action: {}).disabled(true) }
             }
-            Button("Restore Capture Area") { library.restoreCaptureArea(project.id, captureID: variant.id) }
-                .buttonStyle(.borderless)
-                .disabled(!library.canStartWork)
+            if let archive = project.captureStatuses[variant.id]?.archive, archive.state != .downloaded
+            {
+                Button("Adjust Area") { project.adjustCaptureArea(variant.id) }
+                    .disabled(!library.canStartWork)
+                Text("Opens an editable copy with this variant's area and detail. Adjust Width/Height, then Download Tiles to retry.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
         }
         .buttonStyle(.bordered)
         .padding(.vertical, 6)

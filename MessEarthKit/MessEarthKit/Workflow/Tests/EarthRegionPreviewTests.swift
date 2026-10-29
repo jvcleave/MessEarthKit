@@ -12,7 +12,7 @@ private func regionPreviewFixture(root: URL, origin: EarthGeographicOrigin? = ni
     let record = try await store.create()
     let raw = try await projectSourceFixture(files: files, projectID: record.id, placements: 3, mipmapped: true, origin: origin)
     let capture = EarthProjectCapture(id: try #require(UUID(uuidString: raw.directoryURL.lastPathComponent)), request: raw.request)
-    _ = try await store.recordCapture(id: record.id, capture: capture)
+    _ = try await projectRegisterSource(files: files, store: store, projectID: record.id, source: raw)
     let url = try await files.newArtifactDirectory(projectID: record.id, kind: .prepared)
     let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
     let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: url, profile: profile)
@@ -226,7 +226,7 @@ private enum PreviewCompletion: CaseIterable, Sendable { case visible, hidden, c
     {
         let raw = try await projectSourceFixture(files: fixture.files, projectID: fixture.record.id)
         replacement = raw
-        _ = try await fixture.store.recordCapture(id: fixture.record.id, capture: .init(id: #require(UUID(uuidString: raw.directoryURL.lastPathComponent)), request: raw.request))
+        _ = try await projectRegisterSource(files: fixture.files, store: fixture.store, projectID: fixture.record.id, source: raw)
     }
     await gate.release()
     try await settlePreview(preview)

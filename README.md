@@ -16,58 +16,55 @@ and Run. The existing project links the root Swift package; the app module is
 named `MessEarthKitExample` to distinguish it from the library module.
 
 The app opens a **Projects** library with **New** and **Settings** in the toolbar.
-New creates a saved draft and opens Project Details with a separate Project Title,
-Address, Detail, Width and Height. Edits save automatically, including incomplete
-input. Renaming a project leaves its address, capture selections and source files
-unchanged. Toolbar Back preserves edits and project-owned
-jobs. Current project files reopen across launches; invalid files are reported
-without replacing them with empty projects or scanning older storage roots.
-Each home row has a trash button. Confirming **Move to Trash** removes the whole
-project, including its variants and outputs. Settings and app-wide usage remain.
+New creates a saved project with an independent title and a map. Edits save
+automatically. Toolbar Back preserves project-owned jobs. Project rows offer a
+trash button with confirmation; deletion includes all locations, variants and
+outputs while retaining Settings and app-wide usage.
 
 Settings holds the shared API key, request counter and usage details. **Save Key
 in Keychain** explicitly persists an entered key; the secure field otherwise stays
 in memory. Usage is app-wide and remains active while Settings is offscreen.
 
-The capture flow is **Project Details → Download Tiles → 3D Preview**. Capture controls
-stay on the left and MapKit stays on the right. **Update Map** (or Return in the
-address field) resolves the address in place; saved matching locations reopen
-without another lookup. Width, Height and detail update the mapped selection as
-you edit. Changing the address or entering invalid dimensions clears the old
-footprint and disables Download until the current selection is valid.
+The flow is **Project → Add Location → Download Tiles → 3D Preview**. Controls
+stay on the left and MapKit stays on the right. Entering an address and choosing
+**Update Map** moves the camera to a starting point. Searching or browsing never
+creates or moves an existing location, or enters Google acquisition.
 
-Map pan/zoom changes the camera only. The map/lookup does not require a Google
-key or enter Google transport. Review the footprint, then press **Download Tiles**
-directly beneath **Update Map** in the left controls. Whole intersecting tiles may
-extend beyond the shown footprint. Very large/polar display limitations are explicit and do not alter the
-requested dimensions.
+**Add Location** creates an editable area at the current map center. Name it,
+set Width/Height in meters and choose the first variant's Detail. On the map,
+pan and zoom normally; **Edit Area** lets you drag inside the box to move it or
+drag its eight edge/corner handles to resize. **Draw Area** replaces the draft's
+rectangle by dragging between two corners. The camera stays still during editing.
+The box and numeric dimensions preview together; release saves once. Choose
+**Done** to finish editing and return to panning and zooming. Escape or leaving
+the screen discards an unfinished drag. **Move to Map Center**
+and numeric fields remain available. These interactions start no downloads. Whole intersecting edge tiles may extend beyond the shown
+footprint. Polar/large map-display limits do not cap the source request.
 
-The project saves a paused source journal/reference before any Google request.
-**Pause Download** retains completed files; **Resume Download** reuses that exact
-capture, including after relaunch. Download completion automatically prepares
-models offline and advances to 3D Preview only while the initiating route is
-still active. Back never cancels the job or lets a later completion steal navigation.
-Preparation/preview failure retains the successful source download; **Preview**
-or **Refresh Preview** retries offline without another download. Each new
-**Download Tiles** saves a separate capture variant, so Preview, Standard and High
-captures can coexist in one project. Each variant card lists detail, dimensions,
-date and status, with **Reveal in Finder** and **Preview**, or **Resume Download**
-for an incomplete capture. Progress and errors appear on that card. Preview and
-Reveal preserve the current editor/map; **Restore Capture Area** explicitly loads
-that card's saved address/area/detail. Preview prepares models offline if needed.
-Each card also has a trash button with confirmation. It removes that variant's
-downloaded tiles and prepared models while keeping the project, other variants
-and editor settings. Deleting the last variant leaves a draft project. Deletion
-is disabled while work is active; deleted files go to macOS Trash.
-Editing detail or area to a new selection immediately shows a **New variant**
-draft; **Download Tiles** saves it while retaining existing captures. The draft
-does not start tile requests. Paused variants retain their individual resume journals.
-The opened variant supplies the 3D view; other variants remain saved. **Refresh Project**
-in the details toolbar flushes pending edits and reopens the project's recorded
-source/prepared files. **Refresh Preview** performs that reload and retries the
-visible scene (preparing offline if needed). It does not contact Google. Errors
-name the failed stage, such as **Preview unavailable** or **Preparation failed**,
-instead of the former generic Needs attention label.
+**Download Tiles** freezes that location's area and registers a resumable source
+journal before the first Google request. Pause, failure and deleting variants
+never unlock its area. **Add Variant** allows a new Detail choice for the same
+frozen footprint. **Copy Location** creates a new unlocked draft using the area
+and detail settings, with no acquired/prepared files. Move or resize the copy
+before its own first download.
+
+Each location contains its variant cards, with detail/dimensions/date/status,
+**Reveal in Finder** and **Preview**, or **Resume Download**. Preview/reveal/resume
+preserve search and other location drafts. Preview prepares models offline when
+needed; completion advances only from the initiating route, and Back never
+cancels work or lets late completion steal focus. **Show on Map** explicitly
+focuses a location for editing or review.
+If an attempt fails because the area has no coverage, use **Adjust Area** on its
+card. It opens an editable copy with that attempt's area/detail; change Width/
+Height or its center, then Download Tiles. The original attempt remains retained.
+Adjust Area is also available directly below a frozen location's dimensions.
+
+Projects, locations and variants have confirmed trash actions. Location deletion
+includes its variants, while variant deletion retains the frozen location and
+other variants. Removing the last variant leaves the location frozen. Deletion
+is unavailable during active work. **Refresh Project**/**Refresh Preview** reload
+recorded source/prepared references and retry offline, without acquiring again or
+inferring substitute folders. Errors identify the failed operation.
 
 Milestones 1–4 of the
 [project workflow reorganization](docs/internal/plans/PROJECT_WORKFLOW_REORGANIZATION_PLAN.md)
@@ -82,9 +79,9 @@ files. Parts are imported one at a time and CPU source images are not kept in th
 published scene. Leaving Preview releases displayed resources without cancelling
 its worker; hidden completion can reopen offline.
 
-The next planned app step is [locations with detail variants](docs/internal/plans/PROJECT_WORKFLOW_REORGANIZATION_PLAN.md#next-approved-milestone-locations-and-detail-variants),
-followed by the Export screen. The SDK folder/combined-GLB exporters below remain
-implemented independently of that remaining UI work. No live GUI acceptance has
+The [location model and basic controls](docs/internal/plans/PROJECT_WORKFLOW_REORGANIZATION_PLAN.md#next-approved-milestone-locations-and-detail-variants)
+and map move/resize/rectangle drawing are implemented. The Export screen is next.
+The SDK folder/combined-GLB exporters below remain implemented independently of that remaining UI work. No live GUI acceptance has
 been claimed by the headless checks and build.
 
 When developing alongside MessScene in a MESS checkout, open the parent
@@ -234,14 +231,15 @@ small atomic metadata operations and external authorization lifetime. SDK worker
 retain their bounded streaming, hashing, SQLite and artifact-publication paths.
 See the [app storage policy](docs/internal/architecture/MESS_EARTH_APP_STORAGE.md).
 
-Project metadata uses strict schema 2: an independent title, editable draft and
-nullable resolved location, a capture-variant array and nullable selected capture ID.
-Each variant freezes its request/draft/location and owns its prepared reference;
-selection validates its recorded files before committing. Title and draft saves
-share serialized atomic edits. Schema-1 app settings retain usage-detail disclosure
-state separately; neither JSON format stores credentials. Unknown versions and
-missing required keys fail explicitly. The app includes no legacy readers, automatic
-migrations or source-folder inference.
+Project metadata uses strict schema 3: independent title/search state, locations
+with center/dimensions and permanent frozen timestamps, nested detail variants,
+editing location ID and an independent active capture ID. Each variant owns its
+exact request/source/prepared reference. Registration freezes a location and pins
+a source atomically. Copying never reuses source/prepared references. Title/search/
+location edits serialize, and activation cannot overwrite a location draft.
+Settings stay schema 1; neither metadata format stores credentials. Unknown
+versions and missing required keys fail explicitly. No runtime old-format reader,
+automatic migration or source-folder inference ships with the app.
 
 ## Local request counter
 

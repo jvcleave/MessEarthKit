@@ -17,25 +17,8 @@ enum EarthProjectDetail: String, Codable, CaseIterable, Identifiable, Sendable
     }
 }
 
-/// Text fields retain incomplete edits. Numeric validity is checked when a
-/// download is requested, rather than silently replacing a saved draft value.
-struct EarthProjectDraft: Codable, Equatable, Sendable
-{
-    var address: String
-    var detail: EarthProjectDetail
-    var widthMeters: String
-    var heightMeters: String
-
-    static let empty = EarthProjectDraft(address: "", detail: .standard, widthMeters: "200", heightMeters: "200")
-
-    func validate() throws
-    {
-        guard address.utf8.count <= 4096, widthMeters.utf8.count <= 64, heightMeters.utf8.count <= 64
-        else { throw EarthProjectStoreError.invalidRecord }
-    }
-}
-
-struct EarthProjectLocation: Codable, Equatable, Sendable
+/// A map search result is a starting point, never a saved capture area.
+struct EarthMapSearchResult: Codable, Equatable, Sendable
 {
     let address: String
     let title: String
@@ -64,9 +47,13 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
     let createdAt: Date
     var modifiedAt: Date
     var title: String
-    var draft: EarthProjectDraft
-    var resolvedLocation: EarthProjectLocation?
-    var captures: [EarthProjectCaptureVariant]
+    var searchAddress: String
+    var searchResult: EarthMapSearchResult?
+    var locations: [EarthLocationRecord]
+    var editingLocationID: UUID?
+    var captures: [EarthProjectCaptureVariant] { locations.flatMap(\.variants) }
+    var editingLocation: EarthLocationRecord? { locations.first { $0.id == editingLocationID } }
+    var captureLocation: EarthLocationRecord? { locations.first { location in location.variants.contains { $0.id == selectedCaptureID } } }
     var selectedCaptureID: UUID?
     var selectedCapture: EarthProjectCaptureVariant? { captures.first { $0.id == selectedCaptureID } }
     var currentCapture: EarthProjectCapture? { selectedCapture?.capture }
@@ -74,13 +61,13 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
 
     init(id: UUID, date: Date)
     {
-        version = 2
+        version = 3
         self.id = id
         createdAt = date
         modifiedAt = date
         title = ""
-        draft = .empty
-        captures = []
+        searchAddress = ""
+        locations = []
     }
 
     var displayTitle: String
@@ -91,43 +78,49 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
 
     func validate(id expectedID: UUID) throws
     {
-        guard version == 2 else { throw EarthProjectStoreError.unsupportedVersion }
+        guard version == 3 else { throw EarthProjectStoreError.unsupportedVersion }
         guard id == expectedID, createdAt.timeIntervalSince1970.isFinite,
               modifiedAt.timeIntervalSince1970.isFinite, modifiedAt >= createdAt,
-              title.utf8.count <= 512, Set(captures.map(\.id)).count == captures.count,
+              title.utf8.count <= 512, searchAddress.utf8.count <= 4096,
+              Set(locations.map(\.id)).count == locations.count,
+              locations.isEmpty ? editingLocationID == nil : editingLocation != nil,
+              Set(captures.map(\.id)).count == captures.count,
               captures.isEmpty ? selectedCaptureID == nil : selectedCapture != nil
         else { throw EarthProjectStoreError.invalidRecord }
-        try draft.validate()
-        if let resolvedLocation
+        if let searchResult
         {
-            guard resolvedLocation.address == draft.address, !resolvedLocation.title.isEmpty,
-                  resolvedLocation.title.utf8.count <= 4096 else { throw EarthProjectStoreError.invalidRecord }
+            guard searchResult.address == searchAddress, !searchResult.title.isEmpty,
+                  searchResult.title.utf8.count <= 4096 else { throw EarthProjectStoreError.invalidRecord }
         }
-        for capture in captures
+        for location in locations
         {
-            try capture.validate()
-            guard capture.createdAt >= createdAt, capture.createdAt <= modifiedAt else { throw EarthProjectStoreError.invalidRecord }
+            try location.validate()
+            guard location.createdAt >= createdAt, location.createdAt <= modifiedAt,
+                  location.frozenAt.map({ $0 <= modifiedAt }) ?? true
+            else { throw EarthProjectStoreError.invalidRecord }
+            for variant in location.variants where variant.createdAt > modifiedAt
+            { throw EarthProjectStoreError.invalidRecord }
         }
     }
 
     private enum CodingKeys: String, CodingKey
     {
-        case version, id, createdAt, modifiedAt, title, draft, resolvedLocation, captures, selectedCaptureID
+        case version, id, createdAt, modifiedAt, title, searchAddress, searchResult, locations, editingLocationID, selectedCaptureID
     }
 
     init(from decoder: any Decoder) throws
     {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
-        guard version == 2 else { throw EarthProjectStoreError.unsupportedVersion }
+        guard version == 3 else { throw EarthProjectStoreError.unsupportedVersion }
         id = try values.decode(UUID.self, forKey: .id)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         modifiedAt = try values.decode(Date.self, forKey: .modifiedAt)
         title = try values.decode(String.self, forKey: .title)
-        draft = try values.decode(EarthProjectDraft.self, forKey: .draft)
-        // Required nullable keys: absent fields are not a legacy default.
-        resolvedLocation = try values.decode(EarthProjectLocation?.self, forKey: .resolvedLocation)
-        captures = try values.decode([EarthProjectCaptureVariant].self, forKey: .captures)
+        searchAddress = try values.decode(String.self, forKey: .searchAddress)
+        searchResult = try values.decode(EarthMapSearchResult?.self, forKey: .searchResult)
+        locations = try values.decode([EarthLocationRecord].self, forKey: .locations)
+        editingLocationID = try values.decode(UUID?.self, forKey: .editingLocationID)
         selectedCaptureID = try values.decode(UUID?.self, forKey: .selectedCaptureID)
         try validate(id: id)
     }
@@ -140,16 +133,17 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
         try values.encode(createdAt, forKey: .createdAt)
         try values.encode(modifiedAt, forKey: .modifiedAt)
         try values.encode(title, forKey: .title)
-        try values.encode(draft, forKey: .draft)
-        try values.encode(resolvedLocation, forKey: .resolvedLocation)
-        try values.encode(captures, forKey: .captures)
+        try values.encode(searchAddress, forKey: .searchAddress)
+        try values.encode(searchResult, forKey: .searchResult)
+        try values.encode(locations, forKey: .locations)
+        try values.encode(editingLocationID, forKey: .editingLocationID)
         try values.encode(selectedCaptureID, forKey: .selectedCaptureID)
     }
 }
 
 enum EarthProjectStoreError: Error, Equatable, LocalizedError, Sendable
 {
-    case unsupportedVersion, invalidRecord, sourceMismatch, captureNotFound
+    case unsupportedVersion, invalidRecord, sourceMismatch, captureNotFound, locationNotFound, frozenLocation, changedLocation
 
     var errorDescription: String?
     {
@@ -158,6 +152,9 @@ enum EarthProjectStoreError: Error, Equatable, LocalizedError, Sendable
             case .unsupportedVersion: "This project uses an unsupported format version."
             case .invalidRecord: "The project file is invalid or does not match its folder."
             case .sourceMismatch: "The project's saved capture or prepared models do not match their recorded source."
+            case .locationNotFound: "This location is no longer available. Refresh the project and try again."
+            case .frozenLocation: "This location's capture area is frozen. Copy Location to adjust its area."
+            case .changedLocation: "The location or detail changed before the download started. Review it and retry."
             case .captureNotFound: "This capture variant is no longer available in the project. Refresh the project and try again."
         }
     }

@@ -62,7 +62,7 @@ private func projectDeletionRetainsGlobalFilesAndPreventsResurrection(rejectsTra
             #expect(try Data(contentsOf: trashed.appendingPathComponent(relative).appendingPathComponent("fixture")) == Data([1, 2, 3]))
         }
         await #expect(throws: EarthAppFilesError.missingFile) { try await store.updateTitle(id: project.id, title: "Late save") }
-        await #expect(throws: EarthAppFilesError.missingFile) { try await EarthProjectStore(files: files).updateDraft(id: project.id, draft: .empty) }
+        await #expect(throws: EarthAppFilesError.missingFile) { try await EarthProjectStore(files: files).updateTitle(id: project.id, title: "Late edit") }
         #expect(try await files.projectIDs() == [other.id])
     }
     #expect(try await store.record(id: other.id) == other)
@@ -70,7 +70,7 @@ private func projectDeletionRetainsGlobalFilesAndPreventsResurrection(rejectsTra
     #expect(try Data(contentsOf: usageURL) == usage)
 }
 
-private enum VariantDeletionCase: CaseIterable, Sendable { case inactive, active, trashFailure, escapingSource }
+private enum VariantDeletionCase: CaseIterable, Sendable { case inactive, active, trashFailure, escapingSource, location, locationFailure }
 
 // Reuse the authored source/preparer to verify source/prepared ownership,
 // retained editor/location, active/last selection and metadata/file rollback.
@@ -79,34 +79,49 @@ private func variantDeletionKeepsOtherCapturesAndRollsBackFailure(scenario: Vari
 {
     let root = try projectStoreTestRoot()
     defer { try? FileManager.default.removeItem(at: root) }
-    let context = try projectDeletionTestFiles(root: root, rejectsTrash: scenario == .trashFailure)
+    let context = try projectDeletionTestFiles(root: root, rejectsTrash: scenario == .trashFailure || scenario == .locationFailure)
     let files = context.files
     try await files.initialize()
     let store = EarthProjectStore(files: files)
     let project = try await store.create()
     let origin = try EarthGeographicOrigin(latitude: 0, longitude: 0)
-    let location = EarthProjectLocation(address: "Fixture address", title: "Fixture", origin: origin)
+    let added = try await store.addLocation(id: project.id, center: origin, title: "Fixture")
+    let locationID = try #require(added.editingLocationID)
     let profile = try EarthPreparationProfile(name: "Project preview")
     for detail in [EarthProjectDetail.preview, .high]
     {
-        let draft = EarthProjectDraft(address: location.address, detail: detail, widthMeters: "200", heightMeters: "200")
-        _ = try await store.updateEditor(id: project.id, title: "Deletion study", draft: draft)
-        _ = try await store.recordLocation(id: project.id, location: location)
         let url = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
         let source = try await EarthSourceArchive.create(request: EarthDownloadRequest(center: origin, maximumGeometricErrorMeters: detail.errorMeters), directoryURL: url)
-        let capture = try EarthProjectCapture(id: #require(UUID(uuidString: url.lastPathComponent)), request: source.request)
-        _ = try await store.recordCapture(id: project.id, capture: capture)
+        let record = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: source, locationID: locationID)
         let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: source)
         let preparedURL = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
         _ = try await EarthModelPreparer().prepare(archive: completed, directoryURL: preparedURL, profile: profile)
-        let preparation = try EarthProjectPreparation(id: #require(UUID(uuidString: preparedURL.lastPathComponent)), captureID: capture.id, profile: profile)
+        let preparation = EarthProjectPreparation(id: try #require(UUID(uuidString: preparedURL.lastPathComponent)), captureID: try #require(record.currentCapture?.id), profile: profile)
         _ = try await store.recordPreparation(id: project.id, preparation: preparation)
     }
-    var edited = try await store.record(id: project.id).draft
-    edited.widthMeters = "500"
-    _ = try await store.updateDraft(id: project.id, draft: edited)
+    _ = try await store.copyLocation(id: project.id, locationID: locationID)
+    let edited = try #require(try await store.record(id: project.id).editingLocation)
     let before = try await store.record(id: project.id)
     let metadata = try await files.readMetadata(.project(project.id))
+    if scenario == .location || scenario == .locationFailure
+    {
+        let sources = try await files.artifactDirectories(projectID: project.id, kind: .sources)
+        if scenario == .locationFailure
+        {
+            await #expect(throws: EarthAppFilesError.storage) { try await store.deleteLocation(id: project.id, locationID: locationID) }
+            #expect(try await files.readMetadata(.project(project.id)) == metadata)
+            #expect(sources.allSatisfy { FileManager.default.fileExists(atPath: $0.url.path) })
+        }
+        else
+        {
+            _ = try await store.deleteLocation(id: project.id, locationID: locationID)
+            let reopened = try await EarthProjectStore(files: files).open(id: project.id)
+            #expect(reopened.record.locations == [edited] && reopened.record.selectedCaptureID == nil)
+            #expect(sources.allSatisfy { !FileManager.default.fileExists(atPath: $0.url.path) })
+            #expect(try await files.artifactDirectories(projectID: project.id, kind: .prepared).isEmpty)
+        }
+        return
+    }
     let removesInactive = scenario == .inactive || scenario == .escapingSource
     let removed = before.captures[removesInactive ? 0 : 1]
     let retained = before.captures[removesInactive ? 1 : 0]
@@ -134,7 +149,7 @@ private func variantDeletionKeepsOtherCapturesAndRollsBackFailure(scenario: Vari
     {
         let updated = try await store.deleteCapture(id: project.id, captureID: removed.id)
         #expect(updated.captures == [retained] && updated.selectedCaptureID == retained.id)
-        #expect(updated.title == before.title && updated.draft == before.draft && updated.resolvedLocation == before.resolvedLocation)
+        #expect(updated.title == before.title && updated.editingLocation == before.editingLocation && updated.searchAddress == before.searchAddress)
         #expect(!FileManager.default.fileExists(atPath: sourceURL.path) && !FileManager.default.fileExists(atPath: preparedURL.path))
         let bundles = try FileManager.default.contentsOfDirectory(at: context.trash, includingPropertiesForKeys: nil)
         let bundle = try #require(bundles.first)
@@ -147,7 +162,7 @@ private func variantDeletionKeepsOtherCapturesAndRollsBackFailure(scenario: Vari
             _ = try await store.deleteCapture(id: project.id, captureID: retained.id)
             let empty = try await EarthProjectStore(files: files).open(id: project.id)
             #expect(empty.record.captures.isEmpty && empty.record.selectedCaptureID == nil && empty.status == "Draft")
-            #expect(empty.record.draft == edited && empty.record.title == before.title)
+            #expect(empty.record.editingLocation == edited && empty.record.locations[0].isFrozen && empty.record.title == before.title)
         }
     }
 }

@@ -6,6 +6,7 @@ import SwiftUI
 enum EarthDeletionTarget: Sendable
 {
     case project(id: UUID, title: String)
+    case location(projectID: UUID, locationID: UUID, title: String)
     case variant(projectID: UUID, captureID: UUID, title: String)
 
     var confirmationTitle: String
@@ -13,6 +14,7 @@ enum EarthDeletionTarget: Sendable
         switch self
         {
             case .project: "Delete Project?"
+            case .location: "Delete Location?"
             case .variant: "Delete Variant?"
         }
     }
@@ -21,7 +23,8 @@ enum EarthDeletionTarget: Sendable
     {
         switch self
         {
-            case let .project(_, title): "“\(title)” and all of its variants, downloaded tiles, prepared models and exports will be moved to Trash."
+            case let .project(_, title): "“\(title)” and all of its locations, variants, downloaded tiles, prepared models and exports will be moved to Trash."
+            case let .location(_, _, title): "“\(title)” and all of its variants, downloaded tiles and prepared models will be moved to Trash. Other locations will be kept."
             case let .variant(_, _, title): "The downloaded tiles and prepared models for “\(title)” will be moved to Trash. Other variants and the current capture settings will be kept."
         }
     }
@@ -61,6 +64,12 @@ final class EarthProjectLibraryViewModel
     var canStartWork: Bool { !isDeleting && !owners.values.contains(where: { $0.isBusy }) }
 
     var canRequestDeletion: Bool { canStartWork && !isCreating && !isLoading }
+
+    func canEditMap(_ id: UUID) -> Bool
+    {
+        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading else { return false }
+        return !owners.values.contains { $0.id != id && $0.isBusy }
+    }
 
     func canViewPreview(_ id: UUID, captureID: UUID) -> Bool
     {
@@ -142,6 +151,13 @@ final class EarthProjectLibraryViewModel
         deletionTarget = .variant(projectID: projectID, captureID: captureID, title: variant.title)
     }
 
+    func requestLocationDeletion(_ projectID: UUID, locationID: UUID)
+    {
+        guard canRequestDeletion, let owner = owners[projectID], !owner.isSaving,
+              let location = owner.locations.first(where: { $0.id == locationID }) else { return }
+        deletionTarget = .location(projectID: projectID, locationID: locationID, title: location.displayTitle)
+    }
+
     func cancelDeletion() { deletionTarget = nil }
 
     func confirmDeletion(_ target: EarthDeletionTarget)
@@ -175,6 +191,9 @@ final class EarthProjectLibraryViewModel
                     case let .variant(projectID, captureID, _):
                         guard let owner = owners[projectID] else { throw EarthAppFilesError.missingFile }
                         try await owner.deleteCapture(captureID)
+                    case let .location(projectID, locationID, _):
+                        guard let owner = owners[projectID] else { throw EarthAppFilesError.missingFile }
+                        try await owner.deleteLocation(locationID)
                 }
             }
             catch
@@ -194,9 +213,9 @@ final class EarthProjectLibraryViewModel
     {
         guard canStartWork, let owner = owners[id] else { return }
         let ticket = navigation.ticket(route: .project(id))
-        let draft = owner.draft
+        let locationID = owner.editingLocationID
         let onDownloaded = { @MainActor [weak self, weak owner] in
-            guard owner?.draft == draft else { return }
+            guard owner?.editingLocationID == locationID else { return }
             self?.navigation.advance(ticket, to: .preview(id))
         }
         if let archive = owner.downloads.archive, archive.state != .downloaded,
@@ -211,11 +230,11 @@ final class EarthProjectLibraryViewModel
     {
         guard canStartWork, let owner = owners[id] else { return }
         let ticket = navigation.ticket(route: .project(id))
-        let draft = owner.draft
-        owner.selectCapture(captureID, restoresEditor: false)
+        let locationID = owner.editingLocationID
+        owner.selectCapture(captureID)
         { [weak self, weak owner] in
             owner?.resume(onDownloaded: { [weak self, weak owner] in
-                guard owner?.draft == draft else { return }
+                guard owner?.editingLocationID == locationID else { return }
                 self?.navigation.advance(ticket, to: .preview(id))
             }, onPrepared: { [weak self] in self?.renderIfVisible(id) })
         }
@@ -233,18 +252,12 @@ final class EarthProjectLibraryViewModel
             return
         }
         let ticket = navigation.ticket(route: .project(id))
-        owner.selectCapture(captureID, restoresEditor: false)
+        owner.selectCapture(captureID)
         { [weak self, weak owner] in
             guard let self, owner?.downloads.archive?.state == .downloaded,
                   navigation.advance(ticket, to: .preview(id)) else { return }
             prepareOrRenderIfVisible(id)
         }
-    }
-
-    func restoreCaptureArea(_ id: UUID, captureID: UUID)
-    {
-        guard canStartWork, let owner = owners[id] else { return }
-        owner.selectCapture(captureID, restoresEditor: true, onSelected: {})
     }
 
     func refreshProject(_ id: UUID)
@@ -364,7 +377,7 @@ struct EarthProjectLibraryView: View
                                 VStack(alignment: .leading, spacing: 4)
                                 {
                                     Text(project.displayTitle).font(.headline)
-                                    if !project.draft.address.isEmpty { Text(project.draft.address).font(.caption).foregroundStyle(.secondary) }
+                                    if !project.searchAddress.isEmpty { Text(project.searchAddress).font(.caption).foregroundStyle(.secondary) }
                                 }
                                 Spacer()
                                 Text(project.status).foregroundStyle(.secondary)

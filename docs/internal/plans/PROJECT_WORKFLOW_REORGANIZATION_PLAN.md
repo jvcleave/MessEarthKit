@@ -3,9 +3,12 @@
 Status: milestones 1–4 implemented: app files, project library/Settings, MapKit
 confirmation, resumable Download, automatic preparation and whole-region Metal
 composition. Focused checks and the milestone-4 macOS build passed.
-The next approved milestone is the location workflow below, followed by the
-Export screen and end-to-end GUI acceptance. The location model is planned,
-not implemented in the current schema-2 project/capture workflow.
+The location model/lifecycle stage is implemented in schema 3, with basic
+Add/Copy Location and detail-variant controls. The 18 app tests and macOS build
+passed; the existing draft's one-time metadata preservation was explicitly approved
+and applied through EarthAppFiles, preserving its editor values as one location.
+Direct map move/resize/rectangle drawing is implemented; Export and end-to-end
+GUI acceptance remain. Map editing verification is recorded in the handoff.
 App-owned persistence is current-format only.
 Updated: 2026-10-29 (America/New_York).
 Owner: MessEarthKitExample. Reuse the MessEarthKit SDK's existing offline APIs.
@@ -14,8 +17,8 @@ Owner: MessEarthKitExample. Reuse the MessEarthKit SDK's existing offline APIs.
 
 Present named projects containing locations, each with a fixed capture area and
 detail variants, one whole-region preview and one exported file or folder per
-operation. Current code stores project-level capture variants; the approved
-location extension below supersedes that editing model. Internal
+operation. The location extension below supersedes the earlier project-level
+capture editor described in milestones 1–4. Internal
 source tiles, prepared parts and packing budgets remain
 implementation details. Retain the ability to regenerate outputs from downloaded
 sources offline.
@@ -30,8 +33,8 @@ decoder isolation prototype or further MessScene integration.
 
 Agreed on 2026-10-29. This section supersedes the address-bound project editor
 and area-changing project variants described in the implemented milestones below.
-Those descriptions record the current implementation; do not mistake the new
-location workflow for shipped behavior.
+Those descriptions record earlier checkpoints. The model/lifecycle and basic
+controls and direct map gestures now follow the new hierarchy.
 
 - **Project** owns its title and a collection of locations. The address field is
   a project map search: submitting a search moves the camera to a starting point.
@@ -45,14 +48,24 @@ location workflow for shipped behavior.
   direct resizing synchronized with the numeric fields. Keep normal map browsing
   distinct from area editing and retain the left-controls/right-map arrangement.
   Camera motion alone never changes a location. Do not auto-recenter during a
-  drag or perform reverse geocoding for every mouse update. Drawing a replacement
-  rectangle is a follow-on interaction option; freehand polygons and rotation are
-  outside this milestone.
+  drag or perform reverse geocoding for every mouse update. Browse pans/zooms;
+  Edit Area moves the box and exposes eight edge/corner handles; Draw Area replaces
+  the draft rectangle. Live area previews update numeric fields without metadata
+  writes; release commits once after identity/frozen-area checks. Done leaves area
+  editing and restores map browsing. Escape, lost gestures or navigation discard
+  an unfinished preview. Input errors do not move the
+  camera or silently clamp numeric dimensions. Freehand polygons and rotation
+  remain outside this milestone.
 - **First Download Tiles** atomically freezes the location's center/Width/Height
   and records its first variant/source identity before Google transport begins.
   Freeze when the first acquisition is registered, not when it finishes. Pause,
   cancellation, transfer/preparation failure or deleting variants never unlocks
   an already frozen location. Validation failure before registration leaves a draft.
+- **No-coverage recovery** offers Adjust Area on the incomplete variant card and
+  below frozen editor dimensions. It opens/focuses an unlocked location copy with
+  that attempt's original area/detail. Width/Height/center can change before an
+  explicit new download. The failed journal stays intact and is never resumed
+  against changed geometry. No automatic deletion, unlock or paid retry.
 - **Add Variant** under a frozen location allows only Detail to change. All
   variants use that location's identical requested footprint; each freezes its
   own detail/request at registration and owns its download/resume status,
@@ -426,12 +439,10 @@ runtime legacy reader/migration path. Other unreferenced folders remain untouche
 
 ## Next exact action
 
-Checkpoint the current SDK/schema-2 app implementation and this approved plan.
-On continuation, implement the first bounded stage of the location extension:
-typed location identity, independent map-search versus area state, draft/frozen
-lifecycle, first-acquisition freeze, detail-only variant registration and independent
-copy semantics. Inspect current stores/owners and preserve source identities before
-changing the current schema. Complete/checkpoint that stage before wiring map
-gestures and the new location UI. Export remains milestone 5 after the extension;
-it targets one whole variant and stays independent of preview success. External
-destination picking remains unresolved; do not assume a modal picker exception.
+The schema-3 model/lifecycle, basic controls, saved-project preservation and map
+editing are implemented. Finish/checkpoint the current map stage after its tests
+and macOS build pass, then stop. On continuation implement milestone 5: Export for
+one whole variant, independent of preview success. Inspect the existing SDK folder/
+combined-GLB exporter and preflight; offer a new project-owned output with explicit
+appearance policy, inline progress/result/reveal. External destination picking
+remains unresolved; do not assume a modal picker exception.

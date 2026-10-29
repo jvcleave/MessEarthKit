@@ -87,28 +87,6 @@ final class EarthWorkspaceViewModel
         preparationService = EarthModelPreparationService(appFiles: appFiles, projectID: projectID)
     }
 
-    func restoreProject(_ project: EarthOpenedProject)
-    {
-        let draft = project.record.draft
-        address = draft.address
-        captureWidth = draft.widthMeters
-        captureDepth = draft.heightMeters
-        detailError = String(draft.detail.errorMeters)
-        switch draft.detail
-        {
-            case .preview: detail = .preview
-            case .standard: detail = .standard
-            case .high: detail = .high
-        }
-        if let location = project.record.resolvedLocation
-        {
-            latitude = String(location.origin.latitude)
-            longitude = String(location.origin.longitude)
-            resolvedLocationTitle = location.title
-        }
-        downloads.restore(project.archive)
-    }
-
     func openRecordedModels(_ catalog: EarthPreparedCollection)
     {
         guard !isLoading else { return }

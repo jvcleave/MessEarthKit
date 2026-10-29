@@ -10,8 +10,7 @@ func projectStoreTestRoot() throws -> URL
     return root
 }
 
-// Persistence risks: UI drafts can be incomplete; suspended concurrent mutations
-// must preserve separate fields and never attach another project's data.
+// Concurrent editor operations keep search, per-location edits and title separate.
 @Test func projectDraftsKeepIdentityAndSerializeUnrelatedMutations() async throws
 {
     let root = try projectStoreTestRoot()
@@ -21,28 +20,28 @@ func projectStoreTestRoot() throws -> URL
     let store = EarthProjectStore(files: files)
     let first = try await store.create()
     let second = try await store.create()
-    var draft = first.draft
-    draft.address = "613 Race St, Cincinnati, Ohio"
-    _ = try await store.updateDraft(id: first.id, draft: draft)
-    draft.widthMeters = ""
-    let pendingDraft = draft
-    let location = EarthProjectLocation(address: draft.address, title: "613 Race", origin: try EarthGeographicOrigin(latitude: 39, longitude: -84))
-    async let edit = store.updateDraft(id: first.id, draft: pendingDraft)
-    async let resolve = store.recordLocation(id: first.id, location: location)
-    async let rename = store.updateTitle(id: first.id, title: "Race study")
-    _ = try await (edit, resolve, rename)
+    let origin = try EarthGeographicOrigin(latitude: 39, longitude: -84)
+    let added = try await store.addLocation(id: first.id, center: origin, title: "Race")
+    let location = try #require(added.editingLocation)
+    var edit = location.edit
+    edit.area.widthMeters = ""
+    let pending = edit
+    async let areaEdit = store.updateEditor(id: first.id, locations: [location.id: pending])
+    async let search = store.updateEditor(id: first.id, searchAddress: "New York")
+    async let title = store.updateTitle(id: first.id, title: "Race study")
+    _ = try await (areaEdit, search, title)
+    let result = EarthMapSearchResult(address: "New York", title: "New York", origin: try EarthGeographicOrigin(latitude: 40.7, longitude: -74))
+    _ = try await store.recordSearch(id: first.id, result: result)
     let reopened = try await EarthProjectStore(files: files).open(id: first.id)
-    #expect(reopened.record.id == first.id && reopened.record.draft == draft && reopened.record.resolvedLocation == location)
-    #expect(reopened.status == "Draft" && reopened.record.createdAt == first.createdAt)
-    #expect(reopened.record.title == "Race study")
-    #expect(try await store.record(id: second.id).draft == .empty)
-    draft.address = "Another Address"
-    _ = try await store.updateDraft(id: first.id, draft: draft)
-    #expect(try await store.record(id: first.id).resolvedLocation == nil)
-    #expect(try await store.record(id: first.id).title == "Race study")
+    #expect(reopened.record.editingLocation?.edit == edit && reopened.record.editingLocation?.area.center == origin)
+    #expect(reopened.record.title == "Race study" && reopened.record.searchResult == result)
+    #expect(try await store.record(id: second.id).locations.isEmpty)
+    _ = try await store.updateEditor(id: first.id, searchAddress: "Elsewhere")
+    #expect(try await store.record(id: first.id).searchResult == nil)
+    #expect(try await store.record(id: first.id).locations == reopened.record.locations)
 }
 
-private enum InvalidProjectRecord: CaseIterable, Sendable { case version, missingNullable, folderIdentity }
+private enum InvalidProjectRecord: CaseIterable, Sendable { case version, missingNullable, folderIdentity, missingFreeze }
 
 @Test(arguments: InvalidProjectRecord.allCases)
 private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenario: InvalidProjectRecord) async throws
@@ -53,14 +52,19 @@ private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenar
     try await files.initialize()
     let store = EarthProjectStore(files: files)
     let good = try await store.create()
-    let damaged = try await store.create()
+    let empty = try await store.create()
+    let damaged = try await store.addLocation(id: empty.id, center: EarthGeographicOrigin(latitude: 0, longitude: 0), title: "Draft")
     let bytes = try #require(try await files.readMetadata(.project(damaged.id)))
     var json = try #require(try JSONSerialization.jsonObject(with: bytes) as? [String: Any])
     switch scenario
     {
-        case .version: json["version"] = 1
+        case .version: json["version"] = 2
         case .missingNullable: json.removeValue(forKey: "selectedCaptureID")
         case .folderIdentity: json["id"] = good.id.uuidString
+        case .missingFreeze:
+            var locations = try #require(json["locations"] as? [[String: Any]])
+            locations[0].removeValue(forKey: "frozenAt")
+            json["locations"] = locations
     }
     let invalid = try JSONSerialization.data(withJSONObject: json)
     try await files.writeMetadata(invalid, location: .project(damaged.id))
@@ -115,6 +119,25 @@ func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: Earth
     return try index.snapshot()
 }
 
+/// Register a local authored fixture through the real location lifecycle.
+@discardableResult
+func projectRegisterSource(files: EarthAppFiles, store: EarthProjectStore, projectID: UUID, source: EarthSourceArchive, locationID: UUID? = nil) async throws -> EarthProjectRecord
+{
+    var record: EarthProjectRecord
+    if let locationID { record = try await store.editLocation(id: projectID, locationID: locationID) }
+    else { record = try await store.addLocation(id: projectID, center: source.request.center, title: "Fixture") }
+    let location = try #require(record.editingLocation)
+    var edit = location.edit
+    edit.area.widthMeters = String(source.request.widthMeters)
+    edit.area.heightMeters = String(source.request.depthMeters)
+    guard let detail = EarthProjectDetail.allCases.first(where: { $0.errorMeters == source.request.maximumGeometricErrorMeters })
+    else { throw EarthProjectStoreError.invalidRecord }
+    edit.variantDetail = detail
+    record = try await store.updateEditor(id: projectID, locations: [location.id: edit])
+    let selection = try EarthConfirmedSelection(location: #require(record.editingLocation))
+    return try await store.recordCapture(id: projectID, capture: .init(id: #require(UUID(uuidString: source.directoryURL.lastPathComponent)), request: source.request), selection: selection)
+}
+
 @Test func projectReopensOnlyItsRecordedCaptureAndRetainsFrozenRequest() async throws
 {
     let root = try projectStoreTestRoot()
@@ -122,28 +145,24 @@ func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: Earth
     let files = try EarthAppFiles(storageRootURL: root)
     try await files.initialize()
     let store = EarthProjectStore(files: files)
-    let record = try await store.create()
-    let raw = try await projectSourceFixture(files: files, projectID: record.id)
-    let capture = try EarthProjectCapture(id: #require(UUID(uuidString: raw.directoryURL.lastPathComponent)), request: raw.request)
-    _ = try await store.recordCapture(id: record.id, capture: capture)
-    let preparedURL = try await files.newArtifactDirectory(projectID: record.id, kind: .prepared)
+    let project = try await store.create()
+    let raw = try await projectSourceFixture(files: files, projectID: project.id)
+    let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
+    let capture = try #require(registered.currentCapture)
+    let url = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
     let profile = try EarthPreparationProfile()
-    let prepared = try await EarthModelPreparer().prepare(archive: raw, directoryURL: preparedURL, profile: profile)
-    let preparation = try EarthProjectPreparation(id: #require(UUID(uuidString: preparedURL.lastPathComponent)), captureID: capture.id, profile: profile)
-    _ = try await store.recordPreparation(id: record.id, preparation: preparation)
-    var changedDraft = record.draft
-    changedDraft.address = "A different draft selection"
-    changedDraft.widthMeters = "500"
-    _ = try await store.updateDraft(id: record.id, draft: changedDraft)
-    let reopened = try await EarthProjectStore(files: files).open(id: record.id)
-    #expect(reopened.record.draft == changedDraft && reopened.archive?.request == raw.request)
-    #expect(reopened.prepared?.directoryURL == prepared.directoryURL && reopened.status == "Ready")
-    #expect(try await reopened.prepared?.importModel(id: 1).triangleCount == 14)
-    // A newer directory is not adopted when a saved reference disappears.
-    _ = try await projectSourceFixture(files: files, projectID: record.id)
+    _ = try await EarthModelPreparer().prepare(archive: raw, directoryURL: url, profile: profile)
+    _ = try await store.recordPreparation(id: project.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: capture.id, profile: profile))
+    let searchResult = EarthMapSearchResult(address: "New York", title: "New York", origin: try EarthGeographicOrigin(latitude: 40, longitude: -74))
+    _ = try await store.updateEditor(id: project.id, searchAddress: searchResult.address)
+    _ = try await store.recordSearch(id: project.id, result: searchResult)
+    let reopened = try await EarthProjectStore(files: files).open(id: project.id)
+    #expect(reopened.archive?.request == raw.request && reopened.record.locations[0].isFrozen)
+    #expect(reopened.prepared?.directoryURL == url && reopened.status == "Ready")
+    _ = try await projectSourceFixture(files: files, projectID: project.id)
     try FileManager.default.moveItem(at: raw.directoryURL, to: root.appendingPathComponent("retained-source"))
-    await #expect(throws: (any Error).self) { try await EarthProjectStore(files: files).open(id: record.id) }
-    #expect(try await store.record(id: record.id).currentCapture == capture)
+    await #expect(throws: (any Error).self) { try await store.open(id: project.id) }
+    #expect(try await store.record(id: project.id).currentCapture == capture)
 }
 
 @Test func appSettingsDoNotResetOrMigrateUnsupportedExistingData() async throws
@@ -163,11 +182,10 @@ func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: Earth
     #expect(try await files.readMetadata(.settings) == invalid)
 }
 
-// Capture variants are acquisition choices, not internal model parts. Reuse the
-// authored source/preparer; verify completed and paused variants retain identity,
-// their own prepared references and the independent project title across reopen.
+// Detail variants share one immutable area; copies are independent editable
+// drafts. Reopen/selection cannot replace search or the actively edited location.
 @Test(arguments: [false, true])
-func projectRetainsNamedPreviewAndStandardVariants(secondPaused: Bool) async throws
+func projectLocationVariantsRetainGeometryAndPreparation(secondPaused: Bool) async throws
 {
     let root = try projectStoreTestRoot()
     defer { try? FileManager.default.removeItem(at: root) }
@@ -176,96 +194,63 @@ func projectRetainsNamedPreviewAndStandardVariants(secondPaused: Bool) async thr
     let store = EarthProjectStore(files: files)
     let project = try await store.create()
     let origin = try EarthGeographicOrigin(latitude: 0, longitude: 0)
-    let location = EarthProjectLocation(address: "613 Race", title: "613 Race", origin: origin)
+    let initial = try await store.addLocation(id: project.id, center: origin, title: "Race")
+    let locationID = try #require(initial.editingLocationID)
     let profile = try EarthPreparationProfile(name: "Project preview")
-    let previewDraft = EarthProjectDraft(address: location.address, detail: .preview, widthMeters: "200", heightMeters: "200")
-    _ = try await store.updateEditor(id: project.id, title: "Race study", draft: previewDraft)
-    _ = try await store.recordLocation(id: project.id, location: location)
-    let previewURL = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
-    let previewRequest = try EarthDownloadRequest(center: origin, maximumGeometricErrorMeters: 16)
-    let previewSource = try await EarthSourceArchive.create(request: previewRequest, directoryURL: previewURL)
-    let previewCapture = try EarthProjectCapture(id: #require(UUID(uuidString: previewURL.lastPathComponent)), request: previewRequest)
-    _ = try await store.recordCapture(id: project.id, capture: previewCapture, expectedDraft: previewDraft)
-    let preview = try await projectSourceFixture(files: files, projectID: project.id, existing: previewSource)
-    let previewModelsURL = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
-    _ = try await EarthModelPreparer().prepare(archive: preview, directoryURL: previewModelsURL, profile: profile)
-    let previewPreparation = try EarthProjectPreparation(id: #require(UUID(uuidString: previewModelsURL.lastPathComponent)), captureID: previewCapture.id, profile: profile)
-    _ = try await store.recordPreparation(id: project.id, preparation: previewPreparation)
-    let sourceIdentity = try await preview.sourceIdentifier()
-
-    let standardDraft = EarthProjectDraft(address: location.address, detail: .standard, widthMeters: "300", heightMeters: "125")
-    _ = try await store.updateDraft(id: project.id, draft: standardDraft)
-    let standardURL = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
-    let standardRequest = try EarthDownloadRequest(center: origin, widthMeters: 300, depthMeters: 125)
-    let standard = try await EarthSourceArchive.create(request: standardRequest, directoryURL: standardURL)
-    let standardCapture = try EarthProjectCapture(id: #require(UUID(uuidString: standardURL.lastPathComponent)), request: standardRequest)
-    _ = try await store.recordCapture(id: project.id, capture: standardCapture, expectedDraft: standardDraft)
-    var standardPreparation: EarthProjectPreparation?
-    if !secondPaused
+    var preparedURLs: [URL] = []
+    for detail in [EarthProjectDetail.preview, .high]
     {
-        let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: standard)
+        var location = try #require(try await store.record(id: project.id).editingLocation)
+        var edit = location.edit
+        edit.variantDetail = detail
+        _ = try await store.updateEditor(id: project.id, title: "Race study", locations: [locationID: edit])
+        location = try #require(try await store.record(id: project.id).editingLocation)
+        let selection = try EarthConfirmedSelection(location: location)
+        let sourceURL = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
+        let source = try await EarthSourceArchive.create(request: selection.request, directoryURL: sourceURL)
+        _ = try await store.recordCapture(id: project.id, capture: .init(id: #require(UUID(uuidString: sourceURL.lastPathComponent)), request: source.request), selection: selection)
+        if secondPaused && detail == .high { continue }
+        let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: source)
         let url = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
         _ = try await EarthModelPreparer().prepare(archive: completed, directoryURL: url, profile: profile)
-        let preparation = try EarthProjectPreparation(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: standardCapture.id, profile: profile)
-        _ = try await store.recordPreparation(id: project.id, preparation: preparation)
-        standardPreparation = preparation
+        _ = try await store.recordPreparation(id: project.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: #require(UUID(uuidString: sourceURL.lastPathComponent)), profile: profile))
+        preparedURLs.append(url)
     }
-    var editedDraft = standardDraft
-    editedDraft.address = "Another draft address"
-    _ = try await store.updateEditor(id: project.id, title: "Race site", draft: editedDraft)
-    let editedLocation = EarthProjectLocation(address: editedDraft.address, title: editedDraft.address, origin: try EarthGeographicOrigin(latitude: 1, longitude: 1))
-    _ = try await store.recordLocation(id: project.id, location: editedLocation)
+    let frozen = try #require(try await store.record(id: project.id).editingLocation)
+    // A current-format file cannot relabel acquired data with a different area.
+    var corrupted = try await store.record(id: project.id)
+    corrupted.locations[0].area.widthMeters = "250"
+    let corruptBytes = try JSONEncoder().encode(corrupted)
+    #expect(throws: (any Error).self) { try JSONDecoder().decode(EarthProjectRecord.self, from: corruptBytes) }
+    var invalidEdit = frozen.edit
+    invalidEdit.area.widthMeters = "500"
+    await #expect(throws: EarthProjectStoreError.frozenLocation) { try await store.updateEditor(id: project.id, locations: [locationID: invalidEdit]) }
+    // Adjusting an earlier attempt must copy its Preview detail, even though
+    // High is the latest variant on that location.
+    let copied = try await store.copyLocation(id: project.id, locationID: locationID, captureID: frozen.variants[0].id)
+    let copy = try #require(copied.editingLocation)
+    #expect(copy.id != frozen.id && !copy.isFrozen && copy.variants.isEmpty && copy.area == frozen.area)
+    #expect(copy.variantDetail == .preview)
+    var copyEdit = copy.edit
+    copyEdit.area.widthMeters = "500"
+    copyEdit.area.center = try EarthGeographicOrigin(latitude: 1, longitude: 1)
+    _ = try await store.updateEditor(id: project.id, searchAddress: "New York", locations: [copy.id: copyEdit])
+    let before = try await store.record(id: project.id)
+    let statuses = try await store.captureStatuses(id: project.id)
+    #expect(statuses[frozen.variants[0].id]?.archive?.state == .downloaded)
+    #expect(statuses[frozen.variants[1].id]?.archive?.state == (secondPaused ? .paused : .downloaded))
+    #expect(try await store.record(id: project.id) == before)
     let reopenedStore = EarthProjectStore(files: files)
-    let reopened = try await reopenedStore.open(id: project.id)
-    #expect(reopened.record.captures.map(\.id) == [previewCapture.id, standardCapture.id])
-    #expect(reopened.record.captures.map(\.draft) == [previewDraft, standardDraft])
-    #expect(reopened.record.title == "Race site" && reopened.record.draft == editedDraft)
-    #expect(reopened.archive?.state == (secondPaused ? .paused : .downloaded))
-    // Card reads are journal-only and cannot mutate selection/editor metadata.
-    let statuses = try await reopenedStore.captureStatuses(id: project.id)
-    #expect(statuses[previewCapture.id]?.archive?.state == .downloaded)
-    #expect(statuses[standardCapture.id]?.archive?.state == (secondPaused ? .paused : .downloaded))
-    #expect(try await reopenedStore.record(id: project.id) == reopened.record)
-    // Preview and Resume activate exact saved files without replacing the draft
-    // or its separately resolved map location. Only Restore changes the editor.
-    let openedPreview = try await reopenedStore.selectCapture(id: project.id, captureID: previewCapture.id, restoresEditor: false)
-    #expect(openedPreview.prepared?.directoryURL == previewModelsURL)
-    #expect(openedPreview.record.draft == editedDraft && openedPreview.record.resolvedLocation == editedLocation)
-    #expect(openedPreview.record.title == "Race site")
-    let openedStandard = try await reopenedStore.selectCapture(id: project.id, captureID: standardCapture.id, restoresEditor: false)
-    #expect(openedStandard.record.draft == editedDraft && openedStandard.record.resolvedLocation == editedLocation)
-    #expect(openedStandard.archive?.directoryURL == standardURL && openedStandard.record.currentPreparation == standardPreparation)
-    let restoredCurrent = try await reopenedStore.selectCapture(id: project.id, captureID: standardCapture.id, restoresEditor: true)
-    #expect(restoredCurrent.record.draft == standardDraft && restoredCurrent.record.title == "Race site")
-
-    let selectedPreview = try await reopenedStore.selectCapture(id: project.id, captureID: previewCapture.id, restoresEditor: true)
-    #expect(selectedPreview.record.draft == previewDraft && selectedPreview.record.resolvedLocation == location)
-    #expect(selectedPreview.record.title == "Race site" && selectedPreview.prepared?.directoryURL == previewModelsURL)
-    let selectedStandard = try await reopenedStore.selectCapture(id: project.id, captureID: standardCapture.id, restoresEditor: true)
-    #expect(selectedStandard.record.draft == standardDraft && selectedStandard.record.currentPreparation == standardPreparation)
-    #expect(selectedStandard.archive?.directoryURL == standardURL)
-    #expect(try await preview.sourceIdentifier() == sourceIdentity)
-    await #expect(throws: EarthProjectStoreError.sourceMismatch)
-    { try await reopenedStore.recordPreparation(id: project.id, preparation: previewPreparation) }
-
-    let service = EarthProjectCaptureService(
-        id: project.id,
-        files: files,
-        store: reopenedStore,
-        lookup: { _ in location },
-        acquire: { archive, _, _ in Issue.record("Acquisition entered for an unselected variant."); return archive },
-        prepare: { _, _, _ in throw EarthPreparationError.sourceChanged }
-    )
-    await #expect(throws: EarthProjectStoreError.sourceMismatch)
-    { try await service.download(archive: preview, apiKey: "fixture", progress: { _ in }) }
-    // A broken inactive variant cannot displace the valid selected capture.
-    let before = try await reopenedStore.record(id: project.id)
-    try FileManager.default.moveItem(at: previewURL, to: root.appendingPathComponent("retained-preview"))
-    let unavailable = try await reopenedStore.captureStatuses(id: project.id)
-    #expect(unavailable[previewCapture.id]?.archive == nil && unavailable[previewCapture.id]?.errorMessage != nil)
-    #expect(unavailable[standardCapture.id]?.archive?.directoryURL == standardURL)
-    await #expect(throws: (any Error).self)
-    { try await reopenedStore.selectCapture(id: project.id, captureID: previewCapture.id, restoresEditor: false) }
-    #expect(try await reopenedStore.record(id: project.id) == before)
-    #expect(try await reopenedStore.open(id: project.id).archive?.directoryURL == standardURL)
+    let selected = try await reopenedStore.selectCapture(id: project.id, captureID: frozen.variants[0].id)
+    #expect(selected.record.editingLocationID == copy.id && selected.record.editingLocation?.edit == copyEdit && selected.record.searchAddress == "New York")
+    #expect(selected.prepared?.directoryURL == preparedURLs[0])
+    let last = try await reopenedStore.selectCapture(id: project.id, captureID: frozen.variants[1].id)
+    #expect(last.archive?.state == (secondPaused ? .paused : .downloaded))
+    #expect(last.record.locations[0] == frozen)
+    let originalURL = try await files.resolve(reference: frozen.variants[0].capture.reference, projectID: project.id)
+    try FileManager.default.moveItem(at: originalURL, to: root.appendingPathComponent("retained-preview"))
+    let unavailable = try await store.captureStatuses(id: project.id)
+    #expect(unavailable[frozen.variants[0].id]?.errorMessage != nil)
+    await #expect(throws: (any Error).self) { try await reopenedStore.selectCapture(id: project.id, captureID: frozen.variants[0].id) }
+    #expect(try await reopenedStore.record(id: project.id) == last.record)
 }

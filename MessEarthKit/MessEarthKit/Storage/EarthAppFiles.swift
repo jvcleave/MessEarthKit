@@ -155,19 +155,19 @@ actor EarthAppFiles
 
     /// Detach metadata first so an interruption cannot leave live references to
     /// moved files. Normal failures restore files and the original metadata.
-    func trashCapture(projectID: UUID, captureID: UUID, preparationID: UUID?, originalMetadata: Data, updatedMetadata: Data) throws
+    func trashCaptures(projectID: UUID, deletionID: UUID, captureIDs: [UUID], preparationIDs: [UUID], originalMetadata: Data, updatedMetadata: Data) throws
     {
         guard try readMetadata(.project(projectID)) == originalMetadata else { throw EarthAppFilesError.invalidMetadata }
         let project = try projectLocations(id: projectID)
-        var targets = [try artifactParent(projectID: projectID, kind: .sources).appendingPathComponent(captureID.uuidString, isDirectory: true)]
-        if let preparationID { targets.append(project.preparedURL.appendingPathComponent(preparationID.uuidString, isDirectory: true)) }
+        var targets = captureIDs.map { project.sourcesURL.appendingPathComponent($0.uuidString, isDirectory: true) }
+        targets += preparationIDs.map { project.preparedURL.appendingPathComponent($0.uuidString, isDirectory: true) }
         for target in targets
         {
             _ = try checkedManagedURL(target)
             if let values = try attributes(target), values[.type] as? FileAttributeType != .typeDirectory
             { throw EarthAppFilesError.invalidLocation }
         }
-        let folder = project.directoryURL.appendingPathComponent("Deleted-Variant-\(captureID.uuidString)-\(UUID().uuidString)", isDirectory: true)
+        let folder = project.directoryURL.appendingPathComponent("Deleted-Captures-\(deletionID.uuidString)-\(UUID().uuidString)", isDirectory: true)
         try ensureManagedDirectory(folder)
         var moved: [(original: URL, staged: URL)] = []
         var committed = false
