@@ -2,13 +2,29 @@
 
 - Updated: 2026-10-29 (America/New_York).
 - Owner: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
-- Branch: `main`, implementation checkpoint `587de16`.
-- User authorized committing and pushing EarthKit on 2026-10-29. All 63 pending
-  files were committed as `587de16` (variant workflows, previews and configurable
-  GLB exports). This publication record follows that checkpoint. Push main
-  normally; leave MessScene, SDK pins and super-repository pointers alone.
+- Branch: `main`; implementation checkpoint `587de16`, published with record
+  `08459c8`. Current user authorization is to update, commit and push the
+  simplified README. Leave MessScene, SDK pins and root pointers alone.
 
 ## Objective and current bounded stage
+
+Current documentation task (2026-10-29): user approved updating, committing and
+pushing an app-first README, ordered requirements → Google key → project →
+capture → preview → export → consuming output files. Move detailed contracts,
+existing package examples and verification notes into a linked technical
+reference; defer redesigning SwiftPM guidance. Starting HEAD is `08459c8`, clean
+and synchronized with origin/main. Source confirms current Add Location requires
+macOS 26 city lookup despite a 15.6 deployment target. Verify Google key steps
+against official docs. Documentation-only: inspect diff/links; do not build.
+
+Documentation result: README reduced from 794 to 135 lines with exactly the
+seven agreed sections. Detailed contracts, existing SDK examples and verification
+notes live in `docs/TECHNICAL_REFERENCE.md`, with corrected relative links. The
+stale MessScene limitations paragraph and future-app-export statement were
+removed/replaced. Google setup, restrictions and billing were checked against
+official Google documentation; local flow labels were checked against source.
+Seven-section order, ten relative links, code fences, diff and whitespace checks
+passed. No builds/tests or runtime/source changes. SwiftPM redesign is deferred.
 
 Publication checkpoint: `origin/main` fetched and still matches `413ec2e`.
 Reviewed the completed SDK/export, app workflow/preview and storage changes and
@@ -470,9 +486,7 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 ## Next exact action
 
-The implementation stages above are complete, including variant-owned optional
-GLB export and history. Current user authorization is to commit and push the
-EarthKit batch on main. Verification and commit have completed; push the
-implementation and publication record normally to origin/main, then verify that
-the remote matches HEAD and this repository is clean.
+The simplified README and linked technical reference are complete. Commit and
+push these three documentation files on main, then verify remote HEAD and a
+clean tree. Stop before revising SwiftPM guidance; that discussion is deferred.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.
