@@ -59,6 +59,8 @@ Edits save automatically. Projects are stored under
 5. Choose **Add Variant**, then select that variant's **Detail**.
 6. Choose **Download** on the variant card.
 
+![Chicago capture area on the map, with variant and export controls](docs/screenshots/capture-area.png)
+
 Adding a location or variant does not download Google tiles. **Download** starts
 acquisition for that variant's saved area and detail. Use **Pause Download** and
 **Resume Download** if needed. Completed downloads prepare models offline.
@@ -80,6 +82,14 @@ The **Display** menu offers:
 | **Wireframe (no textures)** | Triangle edges; the default. |
 | **Solid (no textures)** | Neutral shaded surfaces. |
 | **Textured** | Captured imagery and materials. |
+
+**Wireframe preview**
+
+![Chicago capture displayed as a wireframe in the 3D preview](docs/screenshots/preview-wireframe.png)
+
+**Textured preview**
+
+![Chicago capture displayed with texture imagery in the 3D preview](docs/screenshots/preview-textured.png)
 
 For larger captures, switch from **Entire Region** to **Model Parts** and use
 **Previous** / **Next** to view one part at a time. Solid and Wireframe skip

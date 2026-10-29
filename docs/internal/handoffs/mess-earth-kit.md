@@ -8,6 +8,13 @@
 
 ## Objective and current bounded stage
 
+README screenshot follow-up (2026-10-29): add the three user-supplied PNGs to
+`docs/screenshots/`, with the map under Capture an area and wireframe/textured
+views under Preview. Preserve original bytes and visible attribution. This
+continues the authorized README update/commit/push workflow from `497e510`.
+All three image links resolve, the PNGs match their originals byte-for-byte and
+diff/whitespace checks passed. Documentation/assets only; no build was run.
+
 Current documentation task (2026-10-29): user approved updating, committing and
 pushing an app-first README, ordered requirements → Google key → project →
 capture → preview → export → consuming output files. Move detailed contracts,
@@ -486,7 +493,8 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 ## Next exact action
 
-The simplified README and linked technical reference are complete. Commit and
-push these three documentation files on main, then verify remote HEAD and a
-clean tree. Stop before revising SwiftPM guidance; that discussion is deferred.
+The simplified README, technical reference and screenshot follow-up are complete.
+Commit and push the README, three screenshot assets and this checkpoint on main,
+then verify remote HEAD and a clean tree. Stop before revising SwiftPM guidance;
+that discussion is deferred.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.
