@@ -4,6 +4,9 @@ Detailed output contracts, SDK examples, supported formats and local verificatio
 Start with the [app guide](../README.md) for setup, capture, preview and export.
 Commands and source paths below assume the repository root.
 
+For SwiftPM dependency setup and local tileset/GLB or prepared-part loading, see
+the [README's SwiftPM section](../README.md#swiftpm).
+
 ## Capture and output contracts
 
 The SDK downloads sources for a geographic location, footprint and requested

@@ -125,8 +125,11 @@ from an export does not reduce the Google tiles already downloaded.
 | Output | What the consuming app needs |
 | --- | --- |
 | **Exported `.glb`** | A glTF 2.0 importer and renderer supporting static triangle meshes, node transforms and the included material, image and vertex attributes. No EarthKit dependency is required. |
-| **Completed capture folder** | A compatible 3D Tiles reader for `tileset.json`, its referenced GLBs, geographic placement and transforms. EarthKit provides these APIs; source GLBs may require Draco decoding. Keep the folder's referenced files together. |
-| **Ready prepared collection** | EarthKit's collection API to open the catalog and load its aligned model parts, or a compatible reader for its local `tileset.json`. Preserve the shared placement when combining parts. |
+| **Completed capture folder** | MessEarthKit's `EarthCaptureImporter` reads `tileset.json`, referenced GLBs and placement transforms. Another compatible 3D Tiles reader can also be used. Keep referenced files together; source GLBs may require Draco decoding. |
+| **Ready prepared collection** | MessEarthKit's `EarthPreparedCollection` opens the catalog and loads aligned model parts. A compatible reader can also use its local `tileset.json`. Preserve the shared placement when combining parts. |
+
+These readers are part of MessEarthKit and can be used without MessScene. See
+[SwiftPM](#swiftpm) below for dependency setup and import examples.
 
 For GLB appearance, the consumer should handle embedded PNG/JPEG images, unlit
 materials and vertex-color tinting when present. An export without normals needs
@@ -140,5 +143,95 @@ GLB decoder. The app can retain the original file for reimport or Reset.
 Preserve the capture's attribution when displaying it. A small GLB on disk can
 still require substantial memory after decoding geometry and images.
 
-Detailed contracts, existing Swift package examples and local verification
-commands are in the [technical reference](docs/TECHNICAL_REFERENCE.md).
+## SwiftPM
+
+The [1.0.0 release](https://github.com/jvcleave/MessEarthKit/releases/tag/1.0.0)
+requires **macOS 15.6+** and **Swift 6.2+**. It exposes the `MessEarthKit` library;
+your app supplies file access and rendering.
+
+### Add the package
+
+In Xcode, choose **File → Add Package Dependencies**, enter
+[`https://github.com/jvcleave/MessEarthKit.git`](https://github.com/jvcleave/MessEarthKit.git),
+choose **Up to Next Major Version** starting at **1.0.0**, and add the
+**MessEarthKit** product to your app target.
+See Apple's [package dependency guide](https://developer.apple.com/documentation/xcode/adding-package-dependencies-to-your-app).
+
+For an existing `Package.swift`, add this entry to the package's `dependencies`:
+
+```swift
+.package(url: "https://github.com/jvcleave/MessEarthKit.git", from: "1.0.0")
+```
+
+Add the library product to the consuming target's `dependencies`:
+
+```swift
+.product(name: "MessEarthKit", package: "MessEarthKit")
+```
+
+Use an exact version or Git revision when you need a fixed integration. SwiftPM
+resolves the package's GLTFKit2 and DracoSwift dependencies.
+
+### Read a tileset or GLB
+
+Pass the URL of a completed capture's `tileset.json`, an individual prepared
+model's `tileset.json`, or a self-contained `.glb`:
+
+```swift
+import Foundation
+import MessEarthKit
+
+func loadCapture(_ sourceURL: URL) async throws -> EarthCapture
+{
+    let importer = EarthCaptureImporter()
+    return try await importer.importFile(fileURL: sourceURL)
+}
+```
+
+The importer follows the tileset's local references and applies tile/node
+transforms. `EarthCapture` contains CPU meshes, material descriptions, encoded
+images, bounds, geographic origin and attribution. Convert these values into your
+app's mesh and texture resources.
+
+Direct import has bounded defaults. Supply `EarthImportLimits` to the importer
+for your app's budgets, or use prepared parts for large captures.
+
+### Load prepared model parts
+
+For a ready `prepared/<preparation UUID>/` folder, page the catalog and consume
+one model at a time:
+
+```swift
+func loadPreparedParts(
+    _ directoryURL: URL,
+    consume: (EarthCapture) async throws -> Void
+) async throws
+{
+    let collection = try await EarthPreparedCollection.open(directoryURL: directoryURL)
+    guard collection.state == .ready else { throw EarthPreparationError.invalidCollection }
+    var offset = 0
+    while offset < collection.modelCount
+    {
+        let page = try await collection.models(offset: offset, limit: 50)
+        guard !page.isEmpty else { throw EarthPreparationError.invalidCollection }
+        for model in page
+        {
+            let capture = try await collection.importModel(id: model.id)
+            try await consume(capture)
+        }
+        offset += page.count
+    }
+}
+```
+
+The `consume` callback is your app's conversion/upload step. Preserve each part's
+shared local coordinates rather than centering parts independently. Loading parts
+separately bounds decoding work; retaining every part still uses their combined
+memory.
+
+Run import and resource preparation on a worker. Sandboxed apps must retain file
+access to the selected folder throughout loading. Local imports need no Google
+key and no MessScene dependency.
+
+Full capture/preparation/export examples, format contracts and verification
+commands are in the [technical reference](docs/TECHNICAL_REFERENCE.md#package-use).

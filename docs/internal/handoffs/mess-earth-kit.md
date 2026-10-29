@@ -3,11 +3,45 @@
 - Updated: 2026-10-29 (America/New_York).
 - Owner: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
 - Branch: `main`; earlier implementation checkpoint `587de16`, README `497e510`,
-  screenshots `2b348e7`. User authorized fixing macOS 15.6 city lookup, correcting
-  the README, and committing/pushing this follow-up. Leave MessScene, SDK pins
+  screenshots `2b348e7`, macOS compatibility `09637a2`. User explicitly authorized
+  release 1.0.0 including the SwiftPM README extension. Leave MessScene, SDK pins
   and root pointers alone.
 
 ## Objective and current bounded stage
+
+Current release milestone (2026-10-29): user explicitly authorized the 1.0
+release while the SwiftPM README edits were in progress. Publish a normal
+GitHub release with annotated tag `1.0.0` on main, including those docs and a
+changelog. README now uses the 1.0.0 SwiftPM version rule. No existing tags or
+releases; GitHub CLI is authenticated and origin/main matches starting HEAD
+`09637a2`. The example app already reports marketing version 1.0/build 1.
+Before publication, run the existing full local SDK/app tests as the first
+release batch gate and build the macOS example in Release at its 15.6 target.
+Review docs/diff, commit, push main and the tag together, then create/verify the
+GitHub release. Do not change other repositories, SDK pins or saved user data.
+Release is tagged SwiftPM/source distribution; no installer/notarization work
+was requested. Actual runtime verification on macOS 15.6 remains unperformed.
+
+Release batch test gate passed: all 60 SDK tests and 37 app tests (97 distinct
+tests), using the existing centralized SwiftPM scratch directory. Log:
+`/tmp/messearthkit-1.0.0-tests.log`. No new source or test infrastructure. README
+includes the reader pointers, SwiftPM version/product setup and direct/paged
+import examples checked against public APIs. Next: Release example build.
+
+Release app gate passed: arm64 `MessEarthKitExample` in Release, signing enabled,
+normal Xcode DerivedData, existing macOS 15.6 deployment target. Exit 0; log
+`/tmp/messearthkit-1.0.0-release-build.log`. All 17 local documentation links and
+anchors, code fences, eight-section order and versioned dependency rule passed
+review. `CHANGELOG.md` and `/tmp/messearthkit-1.0.0-release-notes.md` describe the
+shipped static SDK/app scope. Ready to commit, tag and publish; no source changes.
+
+Current README extension (2026-10-29): user approved naming the EarthKit reader
+APIs in Use the output in another app and adding SwiftPM setup/import examples.
+Starting HEAD `09637a2`, clean. Document the actual MessEarthKit product, versioned
+dependency setup, direct tileset/GLB import, and paged ready collections.
+Keep host file authorization/rendering ownership and import budgets explicit.
+Documentation only: check public signatures, links and diff; do not build or
+change package manifests, dependency pins, source, tests or saved user data.
 
 Current compatibility fix (2026-10-29): user approved preserving macOS 15.6
 support and correcting the README. Starting HEAD `2b348e7`, clean. Keep MapKit
@@ -518,7 +552,8 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 ## Next exact action
 
-The macOS 15.6 compatibility implementation, focused checks and app build are
-complete. Commit/push the two Swift files, README and this checkpoint on main.
-Verify remote HEAD and a clean tree. SwiftPM redesign remains deferred.
+Finish the macOS example Release build and documentation checks. Commit the
+README, technical-reference cross-link, CHANGELOG and this checkpoint. Create
+annotated tag 1.0.0, push main/tag together and publish the verified GitHub
+release with prepared notes. Verify remote refs, published release and clean tree.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.
