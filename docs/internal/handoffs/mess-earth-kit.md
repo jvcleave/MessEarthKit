@@ -2,10 +2,11 @@
 
 - Updated: 2026-10-29 (America/New_York).
 - Owner: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
-- Branch: `main`, last committed checkpoint `413ec2e` (matches origin).
-- Current task: user explicitly authorized committing and pushing the pending
-  EarthKit changes on 2026-10-29. Publish this repository's completed batch on
-  current `main`; leave MessScene, SDK pins and super-repository pointers alone.
+- Branch: `main`, implementation checkpoint `587de16`.
+- User authorized committing and pushing EarthKit on 2026-10-29. All 63 pending
+  files were committed as `587de16` (variant workflows, previews and configurable
+  GLB exports). This publication record follows that checkpoint. Push main
+  normally; leave MessScene, SDK pins and super-repository pointers alone.
 
 ## Objective and current bounded stage
 
@@ -20,12 +21,14 @@ Publication verification: all 49 staged Swift files pass parent-config lint;
 four needed mechanical formatting. Staged diff checks passed. Final batch gate
 passed 21 focused SDK tests plus all 37 app storage/workflow/preview tests.
 Logs: `/tmp/messearthkit-publish-lint.log`, `/tmp/messearthkit-publish-tests.log`.
-Next run the affected macOS example build with the existing shared scheme.
+The affected macOS example build result is recorded below.
 
 Publication app gate passed: arm64 Debug `MessEarthKitExample` with `-jobs 2`,
 normal Xcode DerivedData, signing enabled; exit 0 and empty log at
 `/tmp/messearthkit-publish-app-build.log`. Final staged whitespace/status review
-passed, with no unstaged source edits. Ready for the authorized commit/push.
+passed, with no unstaged source edits. Implementation commit `587de16` completed
+successfully. No app launch, user-data writes, live requests or other repository
+changes were made during publication.
 
 Completed bounded milestone: optional GLB normals, vertex colors, UVs, materials
 and textures with Full, Untextured and Minimal presets in the variant exporter.
@@ -469,6 +472,7 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 The implementation stages above are complete, including variant-owned optional
 GLB export and history. Current user authorization is to commit and push the
-pending EarthKit batch on main. Verification and staged review have passed;
-commit, record the checkpoint and push normally to origin/main.
+EarthKit batch on main. Verification and commit have completed; push the
+implementation and publication record normally to origin/main, then verify that
+the remote matches HEAD and this repository is clean.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.
