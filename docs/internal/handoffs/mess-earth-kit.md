@@ -4,10 +4,19 @@
 - Owner: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
 - Branch: `main`; earlier implementation checkpoint `587de16`, README `497e510`,
   screenshots `2b348e7`, macOS compatibility `09637a2`. User explicitly authorized
-  release 1.0.0 including the SwiftPM README extension. Leave MessScene, SDK pins
-  and root pointers alone.
+  release 1.0.0 including the SwiftPM README extension. Published source commit
+  `1d39216`, annotated tag `1.0.0`. Leave MessScene, SDK pins and root pointers alone.
 
 ## Objective and current bounded stage
+
+Release milestone complete: [MessEarthKit 1.0.0](https://github.com/jvcleave/MessEarthKit/releases/tag/1.0.0)
+is published as Latest, not a draft or prerelease. Main and annotated tag were
+pushed atomically; the remote tag peels to verified commit
+`1d392167d06ed74a8892e6ad093d334ef28c7ed7`. This publication record follows on
+main without changing the tag. Release includes the reader pointers, versioned
+SwiftPM setup/import examples and CHANGELOG, with source archives provided by
+GitHub. All 97 local tests and the macOS Release example build passed. No other
+repository, dependency pin, installer, live capture or user-data changes.
 
 Current release milestone (2026-10-29): user explicitly authorized the 1.0
 release while the SwiftPM README edits were in progress. Publish a normal
@@ -552,8 +561,6 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 ## Next exact action
 
-Finish the macOS example Release build and documentation checks. Commit the
-README, technical-reference cross-link, CHANGELOG and this checkpoint. Create
-annotated tag 1.0.0, push main/tag together and publish the verified GitHub
-release with prepared notes. Verify remote refs, published release and clean tree.
+Release 1.0.0 is published and verified. Commit/push this final publication record,
+verify a clean synchronized main, and stop before starting another milestone.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.
