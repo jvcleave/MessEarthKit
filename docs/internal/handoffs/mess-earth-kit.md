@@ -2,11 +2,36 @@
 
 - Updated: 2026-10-29 (America/New_York).
 - Owner: `/Users/Shared/WORK_IN_PROGRESS/MAC_APPS/MESS/MessEarthKit`.
-- Branch: `main`; implementation checkpoint `587de16`, published with record
-  `08459c8`. Current user authorization is to update, commit and push the
-  simplified README. Leave MessScene, SDK pins and root pointers alone.
+- Branch: `main`; earlier implementation checkpoint `587de16`, README `497e510`,
+  screenshots `2b348e7`. User authorized fixing macOS 15.6 city lookup, correcting
+  the README, and committing/pushing this follow-up. Leave MessScene, SDK pins
+  and root pointers alone.
 
 ## Objective and current bounded stage
+
+Current compatibility fix (2026-10-29): user approved preserving macOS 15.6
+support and correcting the README. Starting HEAD `2b348e7`, clean. Keep MapKit
+reverse geocoding on macOS 26+, use Core Location reverse geocoding on earlier
+supported systems, and preserve actual-centre naming, explicit lookup failures,
+custom names and cancellation. Remove the obsolete unsupported-system error.
+Done means focused existing naming/store checks and the 15.6-deployment macOS
+example build pass; commit and push this bounded fix. No live geocoding, Google
+capture, user-data rewrite, SDK changes or broader workflow changes.
+
+Compatibility implementation is in place: availability selects the native
+geocoder; both branches trim/validate a real city and share cancellation/lifetime
+handling. README now states macOS 15.6+. Four existing naming/store tests (five
+parameterized cases) and scoped lint/diff checks passed. Logs:
+`/tmp/messearthkit-macos15-city-tests.log`, `/tmp/messearthkit-macos15-city-lint.log`.
+Next gate is the macOS example build at its existing 15.6 deployment target.
+No new fixture or test hook is justified for the native API switch; the focused
+tests prove store naming contracts, not live geocoding or an actual older-OS run.
+
+Compatibility gate passed: arm64 Debug `MessEarthKitExample` build, normal Xcode
+DerivedData and existing macOS 15.6 deployment target; exit 0, empty log
+`/tmp/messearthkit-macos15-city-app-build.log`. Checked on macOS 27.0.1; an actual
+macOS 15.6 runtime/live-geocoding check is not claimed. Final scoped diff contains
+only EarthCityLookup, the obsolete error removal, README and this handoff.
 
 README screenshot follow-up (2026-10-29): add the three user-supplied PNGs to
 `docs/screenshots/`, with the map under Capture an area and wireframe/textured
@@ -493,8 +518,7 @@ and silent cleanup. An explicit one-time edit does not change that policy.
 
 ## Next exact action
 
-The simplified README, technical reference and screenshot follow-up are complete.
-Commit and push the README, three screenshot assets and this checkpoint on main,
-then verify remote HEAD and a clean tree. Stop before revising SwiftPM guidance;
-that discussion is deferred.
+The macOS 15.6 compatibility implementation, focused checks and app build are
+complete. Commit/push the two Swift files, README and this checkpoint on main.
+Verify remote HEAD and a clean tree. SwiftPM redesign remains deferred.
 Leave MessScene, package pins, super-repository pointers and user data unchanged.

@@ -3,8 +3,9 @@ import Foundation
 import MapKit
 import MessEarthKit
 
-/// MapKit's callback and native objects stay on its main-actor boundary; only
-/// the resolved city string crosses back to the store worker.
+/// Native geocoding requests and their cancellation stay on the main-actor
+/// framework boundary. Only the city string crosses back to the store worker;
+/// project loading and saving remain on that worker.
 @MainActor
 final class EarthCityLookup
 {
@@ -12,22 +13,37 @@ final class EarthCityLookup
 
     func resolve(center: EarthGeographicOrigin) async throws -> String
     {
-        guard #available(macOS 26.0, *) else { throw EarthLocationNamingError.unsupportedSystem }
         try Task.checkCancellation()
         let location = CLLocation(latitude: center.latitude, longitude: center.longitude)
-        guard let request = MKReverseGeocodingRequest(location: location) else { throw EarthLocationNamingError.cityUnavailable }
-        cancelRequest = { request.cancel() }
         defer { cancelRequest = nil }
         let city: String = try await withTaskCancellationHandler
         {
             try await withCheckedThrowingContinuation
             { continuation in
-                request.getMapItems
-                { items, error in
-                    if let error { continuation.resume(throwing: error); return }
-                    guard let city = items?.first?.addressRepresentations?.cityName?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty
+                if #available(macOS 26.0, *)
+                {
+                    guard let request = MKReverseGeocodingRequest(location: location)
                     else { continuation.resume(throwing: EarthLocationNamingError.cityUnavailable); return }
-                    continuation.resume(returning: city)
+                    cancelRequest = { request.cancel() }
+                    request.getMapItems
+                    { items, error in
+                        if let error { continuation.resume(throwing: error); return }
+                        guard let city = items?.first?.addressRepresentations?.cityName?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty
+                        else { continuation.resume(throwing: EarthLocationNamingError.cityUnavailable); return }
+                        continuation.resume(returning: city)
+                    }
+                }
+                else
+                {
+                    let geocoder = CLGeocoder()
+                    cancelRequest = { geocoder.cancelGeocode() }
+                    geocoder.reverseGeocodeLocation(location, preferredLocale: nil)
+                    { placemarks, error in
+                        if let error { continuation.resume(throwing: error); return }
+                        guard let city = placemarks?.first?.locality?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty
+                        else { continuation.resume(throwing: EarthLocationNamingError.cityUnavailable); return }
+                        continuation.resume(returning: city)
+                    }
                 }
             }
         } onCancel: {

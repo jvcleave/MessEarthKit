@@ -3,13 +3,12 @@ import MessEarthKit
 
 enum EarthLocationNamingError: Error, LocalizedError, Sendable
 {
-    case unsupportedSystem, cityUnavailable, invalidName
+    case cityUnavailable, invalidName
 
     var errorDescription: String?
     {
         switch self
         {
-            case .unsupportedSystem: "Automatic city naming requires macOS 26 or later."
             case .cityUnavailable: "A city could not be resolved for this capture centre."
             case .invalidName: "The location name is invalid or too long."
         }

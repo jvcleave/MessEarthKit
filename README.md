@@ -5,8 +5,7 @@ your Mac, and export self-contained GLB files for other apps.
 
 ## Requirements
 
-- **macOS 26 or newer** for the current app's location workflow, which uses
-  MapKit city lookup when adding locations.
+- **macOS 15.6 or newer** to run the app.
 - **Xcode 26 or newer with Swift 6.2+** to build the app from source.
 - An internet connection for map search, location naming and downloading tiles.
 - For downloads, a Google Cloud project with billing enabled and a Map Tiles API
