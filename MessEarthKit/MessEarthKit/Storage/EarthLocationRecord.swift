@@ -24,9 +24,14 @@ struct EarthLocationArea: Codable, Equatable, Sendable
 
 struct EarthLocationEdit: Equatable, Sendable
 {
-    var title: String
+    var name: EarthLocationName
     var area: EarthLocationArea
     var variantDetail: EarthProjectDetail?
+    var title: String
+    {
+        get { name.title(center: area.center) }
+        set { name = .custom(newValue) }
+    }
 }
 
 /// Area ownership is separate from map search and from acquisition identity.
@@ -35,20 +40,22 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
 {
     let id: UUID
     let createdAt: Date
-    var title: String
+    var name: EarthLocationName
     var area: EarthLocationArea
     var frozenAt: Date?
     var variantDetail: EarthProjectDetail?
     var variants: [EarthProjectCaptureVariant]
     var isFrozen: Bool { frozenAt != nil }
+    var nextVariantDetail: EarthProjectDetail { variantDetail ?? variants.last?.detail ?? .standard }
     var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled Location" : title }
-    var edit: EarthLocationEdit { .init(title: title, area: area, variantDetail: variantDetail) }
+    var title: String { name.title(center: area.center) }
+    var edit: EarthLocationEdit { .init(name: name, area: area, variantDetail: variantDetail) }
 
-    init(id: UUID = UUID(), date: Date, title: String, area: EarthLocationArea, detail: EarthProjectDetail = .standard)
+    init(id: UUID = UUID(), date: Date, name: EarthLocationName, area: EarthLocationArea, detail: EarthProjectDetail = .standard)
     {
         self.id = id
         createdAt = date
-        self.title = title
+        self.name = name
         self.area = area
         variantDetail = detail
         variants = []
@@ -57,7 +64,7 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
     mutating func apply(_ edit: EarthLocationEdit) throws
     {
         if isFrozen, edit.area != area { throw EarthProjectStoreError.frozenLocation }
-        title = edit.title
+        name = edit.name
         area = edit.area
         variantDetail = edit.variantDetail
     }
@@ -65,6 +72,7 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
     func validate() throws
     {
         try area.validate()
+        try name.validate()
         guard title.utf8.count <= 512, createdAt.timeIntervalSince1970.isFinite,
               Set(variants.map(\.id)).count == variants.count,
               variants.isEmpty || isFrozen
@@ -78,20 +86,24 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
         {
             try variant.validate()
             guard variant.locationID == id, variant.createdAt >= createdAt,
-                  frozenAt.map({ $0 <= variant.createdAt }) == true,
-                  variant.capture.request == (try area.request(detail: variant.detail))
+                  frozenAt.map({ $0 <= variant.createdAt }) == true
             else { throw EarthProjectStoreError.invalidRecord }
         }
+        // Every current detail variant captures the same location-owned box.
+        // Historical attempts keep their original immutable requests.
+        guard variants.allSatisfy({ variant in
+            variant.capture.request == (try? area.request(detail: variant.detail))
+        }) else { throw EarthProjectStoreError.invalidRecord }
     }
 
-    private enum CodingKeys: String, CodingKey { case id, createdAt, title, area, frozenAt, variantDetail, variants }
+    private enum CodingKeys: String, CodingKey { case id, createdAt, name, area, frozenAt, variantDetail, variants }
 
     init(from decoder: any Decoder) throws
     {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         id = try values.decode(UUID.self, forKey: .id)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
-        title = try values.decode(String.self, forKey: .title)
+        name = try values.decode(EarthLocationName.self, forKey: .name)
         area = try values.decode(EarthLocationArea.self, forKey: .area)
         frozenAt = try values.decode(Date?.self, forKey: .frozenAt)
         variantDetail = try values.decode(EarthProjectDetail?.self, forKey: .variantDetail)
@@ -104,7 +116,7 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(id, forKey: .id)
         try values.encode(createdAt, forKey: .createdAt)
-        try values.encode(title, forKey: .title)
+        try values.encode(name, forKey: .name)
         try values.encode(area, forKey: .area)
         try values.encode(frozenAt, forKey: .frozenAt)
         try values.encode(variantDetail, forKey: .variantDetail)

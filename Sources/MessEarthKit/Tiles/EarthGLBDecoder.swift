@@ -10,6 +10,7 @@ struct EarthGLBPart
     var materials: [EarthMaterial] = []
     var attributions: [String] = []
     var vertexCount = 0
+    var omittedDegenerateTriangleCount = 0
 }
 
 /// All native objects are created, traversed, and released within the import worker.
@@ -37,6 +38,13 @@ struct EarthGLBDecoder
         guard let scene = asset.defaultScene ?? (asset.scenes.count == 1 ? asset.scenes.first : nil)
         else { throw EarthImportError.unsupportedContent("A default scene or one unambiguous scene is required.") }
         var part = EarthGLBPart()
+        if let value = (json["extras"] as? [String: Any])?["messEarthKitOmittedDegenerateTriangleCount"]
+        {
+            guard let encoded = try? JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed]),
+                  let count = try? JSONDecoder().decode(Int.self, from: encoded), count >= 0
+            else { throw EarthImportError.invalidContent("Invalid omitted-triangle count metadata.") }
+            part.omittedDegenerateTriangleCount = count
+        }
         if let copyright = asset.copyright, !copyright.isEmpty { part.attributions.append(copyright) }
         var materialIndices: [ObjectIdentifier: Int] = [:]
         var textureBytes = 0
@@ -60,7 +68,7 @@ struct EarthGLBDecoder
             try appendNode(node: node, parentTransform: transform, depth: 0, visitedNodes: &visitedNodes, activeNodes: &activeNodes, materialIndices: materialIndices, part: &part)
         }
         guard !part.meshes.isEmpty
-        else { throw EarthImportError.invalidContent("The selected scene has no triangle geometry.") }
+        else { throw EarthImportError.invalidContent("The selected scene has no usable triangle geometry.") }
         return part
     }
 
@@ -242,20 +250,45 @@ struct EarthGLBDecoder
                 }
                 if normals == nil
                 {
-                    guard indices.count <= limits.maximumVertices else { throw EarthImportError.limitExceeded("Flat-normal vertex expansion.") }
                     var flatVertices: [EarthVertex] = []
-                    flatVertices.reserveCapacity(indices.count)
+                    flatVertices.reserveCapacity(min(indices.count, limits.maximumVertices))
+                    func sourcePosition(_ index: Int) -> SIMD3<Double>
+                    {
+                        SIMD3(Double(positions[index * 3]), Double(positions[index * 3 + 1]), Double(positions[index * 3 + 2]))
+                    }
                     for index in stride(from: 0, to: triangleIndices.count, by: 3)
                     {
                         if index.isMultiple(of: 4096) { try Task.checkCancellation() }
-                        let triangle = (0 ..< 3).map { vertices[Int(triangleIndices[index + $0])] }
-                        let cross = simd_cross(triangle[1].position - triangle[0].position, triangle[2].position - triangle[0].position)
-                        guard simd_length_squared(cross) > 1e-20
-                        else { throw EarthImportError.invalidContent("Cannot generate a normal for a degenerate triangle.") }
-                        for vertex in triangle { flatVertices.append(EarthVertex(position: vertex.position, normal: simd_normalize(cross), textureCoordinate: vertex.textureCoordinate, color: vertex.color)) }
+                        let first = Int(triangleIndices[index])
+                        let second = Int(triangleIndices[index + 1])
+                        let third = Int(triangleIndices[index + 2])
+                        // Subtract before transforming, in Double, so translation
+                        // and Float output rounding cannot collapse source edges.
+                        let origin = sourcePosition(first)
+                        let cross = simd_cross(sourcePosition(second) - origin, sourcePosition(third) - origin)
+                        if cross == .zero
+                        {
+                            part.omittedDegenerateTriangleCount = try EarthCaptureGeometryEstimate.sum(part.omittedDegenerateTriangleCount, 1)
+                            continue
+                        }
+                        // Winding was reversed above for reflected transforms.
+                        let transformed = normalTransform * (determinant < 0 ? -cross : cross)
+                        guard transformed.x.isFinite, transformed.y.isFinite, transformed.z.isFinite
+                        else { throw EarthImportError.invalidContent("Generated geometry normal is non-finite.") }
+                        let scale = max(abs(transformed.x), abs(transformed.y), abs(transformed.z))
+                        guard scale > 0 else { throw EarthImportError.invalidContent("Cannot transform a nonzero triangle normal.") }
+                        let normal = SIMD3<Float>(simd_normalize(transformed / scale))
+                        guard flatVertices.count <= limits.maximumVertices - 3
+                        else { throw EarthImportError.limitExceeded("Flat-normal vertex expansion.") }
+                        for source in [first, second, third]
+                        {
+                            let vertex = vertices[source]
+                            flatVertices.append(EarthVertex(position: vertex.position, normal: normal, textureCoordinate: vertex.textureCoordinate, color: vertex.color))
+                        }
                     }
                     vertices = flatVertices
                     triangleIndices = (0 ..< vertices.count).map { UInt32($0) }
+                    if triangleIndices.isEmpty { continue }
                 }
                 let materialIndex: Int
                 if let material = primitive.material

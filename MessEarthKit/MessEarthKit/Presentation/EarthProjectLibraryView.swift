@@ -67,7 +67,7 @@ final class EarthProjectLibraryViewModel
 
     func canEditMap(_ id: UUID) -> Bool
     {
-        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading else { return false }
+        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isLoading else { return false }
         return !owners.values.contains { $0.id != id && $0.isBusy }
     }
 
@@ -209,34 +209,12 @@ final class EarthProjectLibraryViewModel
         owner.updateMap()
     }
 
-    func download(_ id: UUID)
+    func download(_ id: UUID, captureID: UUID)
     {
-        guard canStartWork, let owner = owners[id] else { return }
-        let ticket = navigation.ticket(route: .project(id))
-        let locationID = owner.editingLocationID
-        let onDownloaded = { @MainActor [weak self, weak owner] in
-            guard owner?.editingLocationID == locationID else { return }
-            self?.navigation.advance(ticket, to: .preview(id))
-        }
-        if let archive = owner.downloads.archive, archive.state != .downloaded,
-           archive.request == owner.confirmation?.request
-        {
-            owner.resume(onDownloaded: onDownloaded, onPrepared: { [weak self] in self?.renderIfVisible(id) })
-        }
-        else { owner.download(onDownloaded: onDownloaded, onPrepared: { [weak self] in self?.renderIfVisible(id) }) }
-    }
-
-    func resume(_ id: UUID, captureID: UUID)
-    {
-        guard canStartWork, let owner = owners[id] else { return }
-        let ticket = navigation.ticket(route: .project(id))
-        let locationID = owner.editingLocationID
+        guard canStartWork, let owner = owners[id], owner.areaAdjustment == nil else { return }
         owner.selectCapture(captureID)
         { [weak self, weak owner] in
-            owner?.resume(onDownloaded: { [weak self, weak owner] in
-                guard owner?.editingLocationID == locationID else { return }
-                self?.navigation.advance(ticket, to: .preview(id))
-            }, onPrepared: { [weak self] in self?.renderIfVisible(id) })
+            owner?.download(onPrepared: { [weak self] in self?.renderIfVisible(id) })
         }
     }
 

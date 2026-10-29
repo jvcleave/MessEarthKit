@@ -3,6 +3,27 @@ import MapKit
 import MessEarthKit
 import Testing
 
+// The visible box can move without a mode change. Only visible handles resize;
+// outside points must remain available for map browsing rather than start edits.
+@Test func mapAreaScreenTargetsKeepOutsideMapAvailable() throws
+{
+    let geometry = try #require(EarthMapAreaScreenGeometry(corners: [
+        CGPoint(x: 100, y: 80), CGPoint(x: 300, y: 80),
+        CGPoint(x: 300, y: 200), CGPoint(x: 100, y: 200),
+    ]))
+    #expect(geometry.target(at: CGPoint(x: 200, y: 140), showsHandles: false) == .move)
+    #expect(geometry.target(at: CGPoint(x: 108, y: 78), showsHandles: true) == .resize(.northWest))
+    let nearEast = CGPoint(x: 310, y: 140)
+    #expect(geometry.interactionRect(showsHandles: true).contains(nearEast))
+    #expect(geometry.target(at: nearEast, showsHandles: true) == .resize(.east))
+    #expect(!geometry.interactionRect(showsHandles: false).contains(nearEast))
+    #expect(geometry.target(at: nearEast, showsHandles: false) == nil)
+    let outside = CGPoint(x: 320, y: 140)
+    #expect(!geometry.interactionRect(showsHandles: true).contains(outside))
+    #expect(geometry.target(at: outside, showsHandles: true) == nil)
+    #expect(EarthMapAreaScreenGeometry(corners: []) == nil)
+}
+
 // Pointer movement preserves meters; resizing anchors the opposite edge and
 // stays positive; date-line drawing selects the small wrapped area. No map I/O.
 @Test func mapAreaMoveResizeAndWrappedDrawing() throws
@@ -41,7 +62,7 @@ private enum MapEditFinish: CaseIterable { case commit, cancel, differentLocatio
 private func mapAreaSessionValidatesIdentityAndCancellation(outcome: MapEditFinish) throws
 {
     let origin = try EarthGeographicOrigin(latitude: 39, longitude: -84)
-    let original = EarthLocationRecord(date: Date(), title: "Draft", area: .init(center: origin))
+    let original = EarthLocationRecord(date: Date(), name: .custom("Draft"), area: .init(center: origin))
     var editing = EarthMapAreaEditing()
     try editing.begin(location: original, kind: .resize(.southEast), start: origin)
     editing.update(to: try EarthGeographicOrigin(latitude: 38.999, longitude: -83.998))
@@ -52,7 +73,7 @@ private func mapAreaSessionValidatesIdentityAndCancellation(outcome: MapEditFini
     {
         case .commit: #expect(try editing.finish(location: current) == preview)
         case .cancel: editing.cancel()
-        case .differentLocation: current = EarthLocationRecord(date: Date(), title: "Other", area: original.area)
+        case .differentLocation: current = EarthLocationRecord(date: Date(), name: .custom("Other"), area: original.area)
         case .changedArea: current.area.widthMeters = "500"
         case .frozen: current.frozenAt = Date()
     }
@@ -64,7 +85,7 @@ private func mapAreaSessionValidatesIdentityAndCancellation(outcome: MapEditFini
 @Test func mapAreaRejectsInvalidDrawingAndFrozenStart() throws
 {
     let origin = try EarthGeographicOrigin(latitude: 0, longitude: 0)
-    var location = EarthLocationRecord(date: Date(), title: "Draft", area: .init(center: origin))
+    var location = EarthLocationRecord(date: Date(), name: .custom("Draft"), area: .init(center: origin))
     var editing = EarthMapAreaEditing()
     // Drawing repairs an incomplete numeric draft.
     location.area.widthMeters = ""

@@ -18,6 +18,9 @@ struct EarthRegionPreviewLoader
 
     func load(
         collection: EarthPreparedCollection,
+        modelID: Int? = nil,
+        memoryLimit: EarthPreviewMemoryLimit = .automatic,
+        displayMode: EarthPreviewDisplayMode = .wireframe,
         budget suppliedBudget: EarthPreviewMemoryBudget? = nil,
         progress: @Sendable (EarthRegionPreviewProgress) -> Void,
         validateSource: @Sendable () async throws -> Void
@@ -25,14 +28,17 @@ struct EarthRegionPreviewLoader
     {
         guard collection.state == .ready, collection.coversEntireSource, collection.modelCount > 0
         else { throw EarthRegionPreviewError.incompleteCollection }
+        let selectedCount = modelID == nil ? collection.modelCount : 1
+        let limitBytes = try memoryLimit.resolvedBytes(recommendedWorkingSetSize: device.recommendedMaxWorkingSetSize)
         let budget = suppliedBudget ?? EarthPreviewMemoryBudget(
-            limitBytes: Int(min(1024 * 1024 * 1024, device.recommendedMaxWorkingSetSize / 2)),
+            limitBytes: limitBytes,
             existingBytes: device.currentAllocatedSize
         )
-        let builder = try EarthPreviewSceneBuilder(device: device)
+        let builder = try EarthPreviewSceneBuilder(device: device, displayMode: displayMode)
         var planned = EarthPreviewMemoryCost(textureBytes: builder.constantTextureBytes)
         var largestPartBytes = 0
         var offset = 0
+        var checkedCount = 0
         try await validateCollection(collection)
         while offset < collection.modelCount
         {
@@ -43,14 +49,17 @@ struct EarthRegionPreviewLoader
             for model in page
             {
                 try Task.checkCancellation()
+                offset += 1
+                guard modelID == nil || model.id == modelID else { continue }
                 let cost = try await inspect(model: model, collection: collection, builder: builder)
                 try planned.include(cost)
                 largestPartBytes = max(largestPartBytes, try cost.totalBytes)
                 try budget.admit(sceneBytes: planned.totalBytes, largestPartBytes: largestPartBytes)
-                offset += 1
-                progress(.init(phase: .checking, completed: offset, total: collection.modelCount))
+                checkedCount += 1
+                progress(.init(phase: .checking, completed: checkedCount, total: selectedCount))
             }
         }
+        guard checkedCount == selectedCount else { throw EarthRegionPreviewError.sourceChanged }
         try Task.checkCancellation()
         try await validateSource()
         try await validateCollection(collection)
@@ -60,6 +69,7 @@ struct EarthRegionPreviewLoader
         var attributions = Set<String>()
         var allocatedBytes = builder.constantTextureBytes
         offset = 0
+        var uploadedCount = 0
         while offset < collection.modelCount
         {
             try Task.checkCancellation()
@@ -69,6 +79,8 @@ struct EarthRegionPreviewLoader
             for model in page
             {
                 try Task.checkCancellation()
+                offset += 1
+                guard modelID == nil || model.id == modelID else { continue }
                 let uploaded = try await upload(model: model, collection: collection, builder: builder)
                 let part = uploaded.scene
                 allocatedBytes = try EarthPreviewMemoryCost.sum(allocatedBytes, part.allocatedBytes)
@@ -79,15 +91,15 @@ struct EarthRegionPreviewLoader
                 meshes.append(contentsOf: part.meshes)
                 if bounds == nil { bounds = part.bounds } else { bounds?.include(part.bounds) }
                 attributions.formUnion(part.attributions)
-                offset += 1
-                progress(.init(phase: .uploading, completed: offset, total: collection.modelCount))
+                uploadedCount += 1
+                progress(.init(phase: .uploading, completed: uploadedCount, total: selectedCount))
             }
         }
         try Task.checkCancellation()
         try await validateSource()
         try await validateCollection(collection)
-        guard let bounds, !meshes.isEmpty else { throw EarthRegionPreviewError.incompleteCollection }
-        return EarthPreparedPreview(meshes: meshes, bounds: bounds, modelCount: offset, attributions: attributions.sorted(), allocatedBytes: allocatedBytes)
+        guard let bounds, !meshes.isEmpty, uploadedCount == selectedCount else { throw EarthRegionPreviewError.incompleteCollection }
+        return EarthPreparedPreview(meshes: meshes, bounds: bounds, modelCount: uploadedCount, attributions: attributions.sorted(), allocatedBytes: allocatedBytes, displayMode: displayMode)
     }
 
     private func inspect(model: EarthPreparedModel, collection: EarthPreparedCollection, builder: EarthPreviewSceneBuilder) async throws -> EarthPreviewMemoryCost

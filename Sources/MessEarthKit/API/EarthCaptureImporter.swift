@@ -98,7 +98,7 @@ public actor EarthCaptureImporter
             }
         }
         return EarthCapture(
-            name: fileURL.deletingPathExtension().lastPathComponent,
+            name: assembly.identity?.locationName ?? fileURL.deletingPathExtension().lastPathComponent,
             meshes: assembly.meshes,
             materials: assembly.materials,
             bounds: EarthBounds(minimum: minimum, maximum: maximum),
@@ -107,7 +107,9 @@ public actor EarthCaptureImporter
             rootSourcePath: assembly.sourceFiles[0].relativePath,
             attributions: assembly.attributions.sorted(),
             incompleteReason: graph.incompleteReason,
-            preparationProfile: graph.preparationProfile
+            preparationProfile: graph.preparationProfile,
+            omittedDegenerateTriangleCount: assembly.omittedDegenerateTriangleCount,
+            identity: assembly.identity
         )
     }
 
@@ -133,6 +135,9 @@ public actor EarthCaptureImporter
             case "glb":
                 let json = try EarthGLBDecoder(limits: limits).preflight(data: data, enforcesVertexBudget: false)
                 let combined = try EarthCombinedGLBMetadata.read(json: json, maximumEntries: limits.maximumNodes)
+                assembly.identity = try EarthCaptureIdentity.readMetadata(json: json)
+                if let identity = assembly.identity, let combined, identity.request.center != combined.geographicOrigin
+                { throw EarthImportError.invalidContent("Capture identity does not match the saved geographic origin.") }
                 preparationProfile = try combined?.sourceProfile ?? EarthPreparationProfile.readMetadata(json: json)
                 origin = combined?.geographicOrigin
                 incompleteReason = combined?.preparationComplete == false ? combined?.preparationIssue : nil
@@ -247,6 +252,7 @@ public actor EarthCaptureImporter
         assembly.attributions.formUnion(part.attributions)
         assembly.vertexCount += addedVertices
         assembly.textureBytes += addedTextureBytes
+        assembly.omittedDegenerateTriangleCount = try EarthCaptureGeometryEstimate.sum(assembly.omittedDegenerateTriangleCount, part.omittedDegenerateTriangleCount)
     }
 
     private func readSource(
@@ -300,6 +306,7 @@ public actor EarthCaptureImporter
 
 private struct EarthImportAssembly
 {
+    var identity: EarthCaptureIdentity?
     let suppliedFiles: [URL: Data]?
     var meshes: [EarthMesh] = []
     var materials: [EarthMaterial] = []
@@ -310,6 +317,7 @@ private struct EarthImportAssembly
     var sourceBytes = 0
     var vertexCount = 0
     var textureBytes = 0
+    var omittedDegenerateTriangleCount = 0
     var plansSections = false
     var plannedTiles: [EarthCollectionTile] = []
 }

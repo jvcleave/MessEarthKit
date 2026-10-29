@@ -10,6 +10,8 @@ public struct EarthGLBExportPlan: Sendable
     public let estimate: EarthCaptureGeometryEstimate
     public let outputByteCount: Int?
     public let coversEntireSource: Bool
+    public let options: EarthGLBExportOptions
+    public var includesTextures: Bool { options.includeTextures }
     public let issues: [String]
     public var canExport: Bool { issues.isEmpty && json != nil }
     let collection: EarthPreparedCollection
@@ -37,6 +39,7 @@ public enum EarthGLBExportError: Error, Equatable, LocalizedError, Sendable
     case requirements([String])
     case sourceChanged
     case invalidDestination
+    case invalidOptions
     case storage
 
     public var errorDescription: String?
@@ -46,6 +49,7 @@ public enum EarthGLBExportError: Error, Equatable, LocalizedError, Sendable
             case let .requirements(issues): "Combined GLB cannot fit this destination. " + issues.joined(separator: " ") + " Export separate models or change the destination requirements."
             case .sourceChanged: "The prepared models changed after preflight. Check the selection again; source files are retained."
             case .invalidDestination: "Choose a new .glb file outside the prepared collection. Existing files are not replaced."
+            case .invalidOptions: "Texture export requires UV coordinates and materials."
             case .storage: "The combined GLB could not be written. Check disk space and folder access. Source models are retained."
         }
     }
@@ -60,10 +64,15 @@ public actor EarthGLBExporter
 
     public init() {}
 
+    /// Options select the exported vertex attributes, materials and images.
+    /// Source model loading retains its original limits and data. Texture export
+    /// requires UV coordinates and materials; inconsistent options fail explicitly.
     public func preflight(
         collection: EarthPreparedCollection,
         selection: EarthModelSelection = .all(),
         destination: EarthPreparationProfile,
+        options: EarthGLBExportOptions = .full,
+        identity: EarthCaptureIdentity? = nil,
         progress: @escaping @Sendable (EarthGLBExportProgress) -> Void = { _ in }
     ) async throws -> EarthGLBExportPlan
     {
@@ -71,14 +80,21 @@ public actor EarthGLBExporter
         isWorking = true
         defer { isWorking = false }
         try Task.checkCancellation()
-        let (snapshot, count, estimate) = try Self.inspect(collection: collection, selection: selection)
+        try options.validate()
+        let (snapshot, count, estimate) = try Self.inspect(collection: collection, selection: selection, includeTextures: options.includeTextures)
+        if let identity
+        {
+            try identity.validate()
+            guard identity.request.center == snapshot.geographicOrigin
+            else { throw EarthImportError.invalidContent("Export identity does not match the prepared capture origin.") }
+        }
         let entire = snapshot.coversEntireSource && count == snapshot.modelCount
         let estimatedIssues = Self.requirementIssues(estimate, profile: destination)
         if !estimatedIssues.isEmpty
         {
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, issues: estimatedIssues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
+            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, issues: estimatedIssues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
         }
-        let builder = try EarthCombinedGLB(profile: destination)
+        let builder = try EarthCombinedGLB(profile: destination, options: options, identity: identity)
         var models: [EarthGLBExportModel] = []
         var offset = 0
         var lastProgress = ContinuousClock.now
@@ -114,11 +130,11 @@ public actor EarthGLBExporter
             { issues.append("The file needs \(total.formatted()) bytes; this destination allows \(destination.maximumSourceBytesPerModel.formatted()).") }
             if total > Int(UInt32.max)
             { issues.append("The file exceeds GLB's 32-bit container length.") }
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: builder.estimate, outputByteCount: total, coversEntireSource: entire, issues: issues, collection: snapshot, json: issues.isEmpty ? json : nil, binaryByteCount: builder.binaryByteCount, models: models)
+            return EarthGLBExportPlan(selectedModelCount: count, estimate: builder.estimate, outputByteCount: total, coversEntireSource: entire, options: options, issues: issues, collection: snapshot, json: issues.isEmpty ? json : nil, binaryByteCount: builder.binaryByteCount, models: models)
         }
         catch let EarthGLBExportError.requirements(issues)
         {
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, issues: issues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
+            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, issues: issues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
         }
     }
 
@@ -171,7 +187,7 @@ public actor EarthGLBExporter
                 try Task.checkCancellation()
                 let capture = try await current.importModel(id: model.id)
                 guard Self.fingerprint(capture) == model.fingerprint else { throw EarthGLBExportError.sourceChanged }
-                try autoreleasepool { try EarthCombinedGLB.writeBinary(capture, to: output) }
+                try autoreleasepool { try EarthCombinedGLB.writeBinary(capture, options: plan.options, to: output) }
                 if ordinal == 0 || ordinal + 1 == plan.selectedModelCount || lastProgress.duration(to: .now) >= .milliseconds(200)
                 {
                     progress(.init(phase: .writing, completedModels: ordinal + 1, totalModels: plan.selectedModelCount))
@@ -195,7 +211,7 @@ public actor EarthGLBExporter
         catch { throw EarthGLBExportError.storage }
     }
 
-    private static func inspect(collection: EarthPreparedCollection, selection: EarthModelSelection) throws -> (EarthPreparedCollection, Int, EarthCaptureGeometryEstimate)
+    private static func inspect(collection: EarthPreparedCollection, selection: EarthModelSelection, includeTextures: Bool) throws -> (EarthPreparedCollection, Int, EarthCaptureGeometryEstimate)
     {
         let index = try EarthPreparationIndex(directoryURL: collection.directoryURL)
         let snapshot = try index.snapshot()
@@ -206,7 +222,11 @@ public actor EarthGLBExporter
         try index.forEachModel
         { model in
             try Task.checkCancellation()
-            if selection.includes(model.id) { estimate = try estimate.adding(model.estimate) }
+            if selection.includes(model.id)
+            {
+                let cost = includeTextures ? model.estimate : try EarthCaptureGeometryEstimate(vertices: model.estimate.vertexCount, indices: model.estimate.indexCount)
+                estimate = try estimate.adding(cost)
+            }
         }
         return (snapshot, count, estimate)
     }

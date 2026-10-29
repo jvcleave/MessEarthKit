@@ -90,14 +90,22 @@ private func variantDeletionKeepsOtherCapturesAndRollsBackFailure(scenario: Vari
     let profile = try EarthPreparationProfile(name: "Project preview")
     for detail in [EarthProjectDetail.preview, .high]
     {
+        let initialDetail: EarthProjectDetail = detail == .high ? .standard : detail
         let url = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
-        let source = try await EarthSourceArchive.create(request: EarthDownloadRequest(center: origin, maximumGeometricErrorMeters: detail.errorMeters), directoryURL: url)
+        let source = try await EarthSourceArchive.create(request: EarthDownloadRequest(center: origin, maximumGeometricErrorMeters: initialDetail.errorMeters), directoryURL: url)
         let record = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: source, locationID: locationID)
-        let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: source)
+        let current: EarthSourceArchive
+        if detail == .high
+        {
+            _ = try await store.changeVariantDetail(id: project.id, captureID: #require(record.selectedCaptureID), detail: detail)
+            current = try #require(try await store.open(id: project.id).archive)
+        }
+        else { current = source }
+        let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: current)
         let preparedURL = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
         _ = try await EarthModelPreparer().prepare(archive: completed, directoryURL: preparedURL, profile: profile)
-        let preparation = EarthProjectPreparation(id: try #require(UUID(uuidString: preparedURL.lastPathComponent)), captureID: try #require(record.currentCapture?.id), profile: profile)
-        _ = try await store.recordPreparation(id: project.id, preparation: preparation)
+        let preparation = EarthProjectPreparation(id: try #require(UUID(uuidString: preparedURL.lastPathComponent)), captureID: try #require(UUID(uuidString: current.directoryURL.lastPathComponent)), profile: profile)
+        _ = try await store.recordPreparation(id: project.id, variantID: #require(record.selectedCaptureID), preparation: preparation)
     }
     _ = try await store.copyLocation(id: project.id, locationID: locationID)
     let edited = try #require(try await store.record(id: project.id).editingLocation)
@@ -154,6 +162,12 @@ private func variantDeletionKeepsOtherCapturesAndRollsBackFailure(scenario: Vari
         let bundles = try FileManager.default.contentsOfDirectory(at: context.trash, includingPropertiesForKeys: nil)
         let bundle = try #require(bundles.first)
         #expect(FileManager.default.fileExists(atPath: bundle.appendingPathComponent("sources-\(removed.id.uuidString)").path))
+        for source in removed.sourceCaptures
+        {
+            let url = try await files.resolve(reference: source.reference, projectID: project.id)
+            #expect(!FileManager.default.fileExists(atPath: url.path))
+            #expect(FileManager.default.fileExists(atPath: bundle.appendingPathComponent("sources-\(source.id.uuidString)").path))
+        }
         #expect(FileManager.default.fileExists(atPath: bundle.appendingPathComponent("prepared-\(try #require(removed.preparation?.id).uuidString)").path))
         let reopened = try await EarthProjectStore(files: files).open(id: project.id)
         #expect(reopened.record.currentPreparation == retained.preparation && reopened.status == "Ready")

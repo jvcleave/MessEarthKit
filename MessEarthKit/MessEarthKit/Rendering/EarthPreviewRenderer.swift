@@ -10,6 +10,7 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     let device: MTLDevice
     private let queue: MTLCommandQueue
     private let pipeline: MTLRenderPipelineState
+    private let geometryPipeline: MTLRenderPipelineState
     private let opaqueDepth: MTLDepthStencilState
     private let blendedDepth: MTLDepthStencilState
     private let lock = NSLock()
@@ -23,7 +24,8 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         guard let queue = device.makeCommandQueue(),
               let library = suppliedLibrary ?? device.makeDefaultLibrary(),
               let vertex = library.makeFunction(name: "earthPreviewVertex"),
-              let fragment = library.makeFunction(name: "earthPreviewFragment")
+              let fragment = library.makeFunction(name: "earthPreviewFragment"),
+              let geometryFragment = library.makeFunction(name: "earthPreviewGeometryFragment")
         else { throw EarthImportError.unsupportedContent("The Metal preview is unavailable.") }
         self.device = device
         self.queue = queue
@@ -38,6 +40,9 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         descriptor.colorAttachments[0].destinationAlphaBlendFactor = .oneMinusSourceAlpha
         descriptor.depthAttachmentPixelFormat = .depth32Float
         pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        descriptor.fragmentFunction = geometryFragment
+        descriptor.colorAttachments[0].isBlendingEnabled = false
+        geometryPipeline = try device.makeRenderPipelineState(descriptor: descriptor)
         let depth = MTLDepthStencilDescriptor()
         depth.depthCompareFunction = .lessEqual
         depth.isDepthWriteEnabled = true
@@ -72,6 +77,13 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         zoomScale = 1
         yaw = .pi / 5
         pitch = .pi / 4
+        lock.unlock()
+    }
+
+    func clearScene()
+    {
+        lock.lock()
+        scene = nil
         lock.unlock()
     }
 
@@ -117,31 +129,45 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         let verticalScale = 1 / tan(Float.pi / 8)
         let horizontalScale = verticalScale / Float(view.drawableSize.width / view.drawableSize.height)
         let projection = simd_float4x4(columns: (SIMD4(horizontalScale, 0, 0, 0), SIMD4(0, verticalScale, 0, 0), SIMD4(0, 0, far / (near - far), -1), SIMD4(0, 0, near * far / (near - far), 0)))
-        var viewProjection = projection * camera
-        encoder.setRenderPipelineState(pipeline)
+        encode(scene: scene, viewProjection: projection * camera, eye: eye, encoder: encoder)
+        encoder.endEncoding()
+        command.present(drawable)
+        command.commit()
+    }
+
+    /// Encodes immutable resources into the caller's render pass.
+    func encode(scene: EarthPreparedPreview, viewProjection: simd_float4x4, eye: SIMD3<Float>, encoder: MTLRenderCommandEncoder)
+    {
+        var viewProjection = viewProjection
+        let textured = scene.displayMode.usesTextures
+        let wireframe = scene.displayMode == .wireframe
+        encoder.setRenderPipelineState(textured ? pipeline : geometryPipeline)
+        encoder.setTriangleFillMode(wireframe ? .lines : .fill)
         encoder.setFrontFacing(.counterClockwise)
         encoder.setVertexBytes(&viewProjection, length: MemoryLayout<simd_float4x4>.stride, index: 1)
-        let orderedMeshes = scene.meshes.sorted
+        let orderedMeshes = textured ? scene.meshes.sorted
         { first, second in
             if first.material.alphaMode != .blend, second.material.alphaMode == .blend { return true }
             if first.material.alphaMode == .blend, second.material.alphaMode != .blend { return false }
             return simd_distance_squared(first.center, eye) > simd_distance_squared(second.center, eye)
-        }
+        } : scene.meshes
         for mesh in orderedMeshes
         {
             let material = mesh.material
-            encoder.setCullMode(material.isDoubleSided ? .none : .back)
-            encoder.setDepthStencilState(material.alphaMode == .blend ? blendedDepth : opaqueDepth)
-            var surface = SurfaceUniforms(baseColor: material.baseColor, options: SIMD4(material.isUnlit ? 1 : 0, material.alphaMode == .mask ? material.alphaCutoff : -1, material.alphaMode != .blend ? 1 : 0, 0))
+            encoder.setCullMode(textured && !material.isDoubleSided ? .back : .none)
+            encoder.setDepthStencilState(textured && material.alphaMode == .blend ? blendedDepth : opaqueDepth)
+            var surface = textured
+                ? SurfaceUniforms(baseColor: material.baseColor, options: SIMD4(material.isUnlit ? 1 : 0, material.alphaMode == .mask ? material.alphaCutoff : -1, material.alphaMode != .blend ? 1 : 0, 0))
+                : SurfaceUniforms(baseColor: SIMD4(0.72, 0.78, 0.84, 1), options: SIMD4(0, -1, 1, wireframe ? 1 : 0))
             encoder.setVertexBuffer(mesh.vertices, offset: 0, index: 0)
             encoder.setFragmentBytes(&surface, length: MemoryLayout<SurfaceUniforms>.stride, index: 0)
-            encoder.setFragmentTexture(mesh.texture, index: 0)
-            encoder.setFragmentSamplerState(mesh.sampler, index: 0)
+            if textured
+            {
+                encoder.setFragmentTexture(mesh.texture, index: 0)
+                encoder.setFragmentSamplerState(mesh.sampler, index: 0)
+            }
             encoder.drawIndexedPrimitives(type: .triangle, indexCount: mesh.indexCount, indexType: .uint32, indexBuffer: mesh.indices, indexBufferOffset: 0)
         }
-        encoder.endEncoding()
-        command.present(drawable)
-        command.commit()
     }
 
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) {}

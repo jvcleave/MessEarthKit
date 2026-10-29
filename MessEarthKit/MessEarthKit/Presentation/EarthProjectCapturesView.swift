@@ -1,8 +1,7 @@
 import MessEarthKit
 import SwiftUI
 
-/// Each saved acquisition owns its actions. Opening files or a preview leaves
-/// the editor alone; adjusting an area creates an independent editable location.
+/// Locations own their shared capture area; variants own detail, downloads and exports.
 struct EarthProjectCapturesView: View
 {
     let project: EarthProjectViewModel
@@ -16,24 +15,25 @@ struct EarthProjectCapturesView: View
             {
                 HStack
                 {
-                    Text(location.isFrozen ? "Frozen area" : "Draft area").font(.caption).foregroundStyle(.secondary)
+                    Text(project.areaAdjustment?.locationID == location.id ? "Editing area" : location.isFrozen ? "Frozen area" : "Draft area").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Show on Map") { project.showLocation(location.id) }.disabled(!library.canStartWork)
+                    Button("Copy Location") { project.copyLocation(location.id) }.disabled(!library.canStartWork)
                     Button(role: .destructive) { library.requestLocationDeletion(project.id, locationID: location.id) } label: { Image(systemName: "trash") }
                         .buttonStyle(.borderless).help("Delete Location").accessibilityLabel("Delete location \(location.displayTitle)")
                         .disabled(!library.canRequestDeletion || project.isSaving)
                 }
-                Text("\(location.area.widthMeters) × \(location.area.heightMeters) m").font(.caption)
-                HStack
+                if location.id == project.editingLocationID, let editingLocation = project.editingLocation
                 {
-                    Button("Copy Location") { project.copyLocation(location.id) }
-                    if location.isFrozen, location.variantDetail == nil
-                    { Button("Add Variant") { project.addVariant(location.id) } }
-                }.disabled(!library.canStartWork)
-                if let detail = location.variantDetail
-                { Text("\(detail.title) variant · Not downloaded").font(.caption).foregroundStyle(.secondary) }
-                ForEach(location.variants.reversed())
-                { variant in EarthProjectCaptureCard(variant: variant, project: project, library: library) }
+                    EarthLocationEditorView(location: editingLocation, project: project, library: library)
+                }
+                else { Text("\(location.area.widthMeters) × \(location.area.heightMeters) m").font(.caption) }
+                if !location.variants.isEmpty
+                {
+                    Text("Variants").font(.headline)
+                    ForEach(location.variants.reversed())
+                    { variant in EarthProjectCaptureCard(variant: variant, project: project, library: library) }
+                }
             }
         }
     }
@@ -57,8 +57,14 @@ private struct EarthProjectCaptureCard: View
                     .buttonStyle(.borderless).help("Delete Variant").accessibilityLabel("Delete variant \(variant.title)")
                     .disabled(!library.canRequestDeletion || project.isSaving)
             }
-            Text(variant.createdAt, format: .dateTime.month(.abbreviated).day().hour().minute())
-                .font(.caption).foregroundStyle(.secondary)
+            Picker("Detail", selection: Binding(get: { variant.detail }, set: { project.setVariantDetail($0, captureID: variant.id) }))
+            { ForEach(EarthProjectDetail.allCases) { Text($0.title).tag($0) } }
+            .disabled(!project.canChangeVariantDetail(variant.id) || !library.canStartWork)
+            if let archive = project.captureStatuses[variant.id]?.archive, archive.state != .downloaded
+            {
+                Button(archive.sourceRequests == 0 ? "Download" : "Resume Download") { library.download(project.id, captureID: variant.id) }
+                    .disabled(project.areaAdjustment != nil || !library.canStartWork || !project.hasAPIKey)
+            }
             Text(project.captureStatus(variant.id)).font(.subheadline)
             if let summary = project.captureStatuses[variant.id]?.summary
             { Text(summary).font(.caption).foregroundStyle(.secondary) }
@@ -76,26 +82,24 @@ private struct EarthProjectCaptureCard: View
             }
             HStack
             {
-                Button("Reveal in Finder") { project.revealCapture(variant.id) }
+                if let archive = project.captureStatuses[variant.id]?.archive, archive.completedPayloadCount > 0
+                { Button("Reveal Download") { project.revealCapture(variant.id) } }
+                if variant.preparation != nil
+                { Button("Reveal Models") { project.revealCapture(variant.id, preparedModels: true) } }
                 if project.captureStatuses[variant.id]?.archive?.state == .downloaded
                 {
                     Button("Preview") { library.showPreview(project.id, captureID: variant.id) }
                         .disabled(!library.canViewPreview(project.id, captureID: variant.id))
                 }
-                else if project.captureStatuses[variant.id]?.archive != nil
-                {
-                    Button("Resume Download") { library.resume(project.id, captureID: variant.id) }
-                        .disabled(!library.canStartWork || !project.hasAPIKey)
-                }
                 else { Button("Preview", action: {}).disabled(true) }
             }
-            if let archive = project.captureStatuses[variant.id]?.archive, archive.state != .downloaded
-            {
-                Button("Adjust Area") { project.adjustCaptureArea(variant.id) }
-                    .disabled(!library.canStartWork)
-                Text("Opens an editable copy with this variant's area and detail. Adjust Width/Height, then Download Tiles to retry.")
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+            EarthProjectExportControls(
+                export: project.export,
+                variantID: variant.id,
+                isDownloaded: project.captureStatuses[variant.id]?.archive?.state == .downloaded,
+                canStartWork: library.canStartWork && !project.isBusy,
+                startExport: { project.exportVariant(variant.id) }
+            )
         }
         .buttonStyle(.bordered)
         .padding(.vertical, 6)

@@ -1,6 +1,14 @@
 import Foundation
 import MessEarthKit
 
+struct EarthOpenedVariant: Sendable
+{
+    let location: EarthLocationRecord
+    let variant: EarthProjectCaptureVariant
+    let archive: EarthSourceArchive
+    let prepared: EarthPreparedCollection?
+}
+
 struct EarthOpenedProject: Sendable
 {
     let record: EarthProjectRecord
@@ -10,7 +18,7 @@ struct EarthOpenedProject: Sendable
     var status: String
     {
         guard let archive else { return "Draft" }
-        if archive.state != .downloaded { return "Paused" }
+        if archive.state != .downloaded { return EarthProjectCaptureStatus(archive: archive, errorMessage: archive.interruptionReason).title }
         if let prepared { return prepared.state == .ready ? "Ready" : "Preparation incomplete" }
         return "Downloaded"
     }
@@ -34,11 +42,19 @@ struct EarthProjectCaptureStatus: Sendable
 {
     let archive: EarthSourceArchive?
     let errorMessage: String?
+    var canChangeDetail = false
+    var canChangeArea = false
+
+    static func isUnstarted(_ archive: EarthSourceArchive) -> Bool
+    {
+        archive.state == .paused && archive.sourceRequests == 0 && archive.completedPayloadCount == 0 && archive.interruptionReason == nil
+    }
 
     var title: String
     {
         guard let archive else { return "Unavailable" }
-        return archive.state == .downloaded ? "Downloaded" : "Paused"
+        if archive.state == .downloaded { return "Downloaded" }
+        return archive.sourceRequests == 0 ? "Not downloaded" : "Paused"
     }
 
     var summary: String?
@@ -52,11 +68,18 @@ struct EarthProjectCaptureStatus: Sendable
 /// per-project mutation chains preserve ordering across actor suspension points.
 actor EarthProjectStore
 {
+    typealias CityLookup = @Sendable (EarthGeographicOrigin) async throws -> String
+
     private let files: EarthAppFiles
+    private let cityLookup: CityLookup
     private var mutations: [UUID: (id: UUID, task: Task<EarthProjectRecord, Error>)] = [:]
     private var unavailableProjects: Set<UUID> = []
 
-    init(files: EarthAppFiles) { self.files = files }
+    init(files: EarthAppFiles, cityLookup: @escaping CityLookup = { try await EarthCityLookup().resolve(center: $0) })
+    {
+        self.files = files
+        self.cityLookup = cityLookup
+    }
 
     func create() async throws -> EarthProjectRecord
     {
@@ -117,7 +140,34 @@ actor EarthProjectStore
 
     func updateEditor(id: UUID, title: String? = nil, searchAddress: String? = nil, locations: [UUID: EarthLocationEdit] = [:]) async throws -> EarthProjectRecord
     {
-        try await mutate(id: id)
+        var resolvedEdits = locations
+        var expectedNames: [UUID: EarthLocationName] = [:]
+        if !locations.isEmpty
+        {
+            let snapshot = try await record(id: id)
+            for (locationID, edit) in locations
+            {
+                guard let saved = snapshot.locations.first(where: { $0.id == locationID }) else { throw EarthProjectStoreError.locationNotFound }
+                if saved.isFrozen, edit.area != saved.area { throw EarthProjectStoreError.frozenLocation }
+                if case .automatic = edit.name
+                {
+                    guard case .automatic = saved.name else { throw EarthProjectStoreError.changedLocation }
+                    var resolved = edit
+                    if edit.area.center != saved.area.center
+                    {
+                        let city = try await cityLookup(edit.area.center)
+                        resolved.name = .automatic(city: city)
+                    }
+                    else { resolved.name = saved.name }
+                    try resolved.name.validate()
+                    resolvedEdits[locationID] = resolved
+                    expectedNames[locationID] = saved.name
+                }
+            }
+        }
+        let edits = resolvedEdits
+        let nameChecks = expectedNames
+        return try await mutate(id: id)
         { record in
             if let title { record.title = title }
             if let searchAddress
@@ -125,9 +175,10 @@ actor EarthProjectStore
                 if record.searchAddress != searchAddress { record.searchResult = nil }
                 record.searchAddress = searchAddress
             }
-            for (locationID, edit) in locations
+            for (locationID, edit) in edits
             {
                 guard let index = record.locations.firstIndex(where: { $0.id == locationID }) else { throw EarthProjectStoreError.locationNotFound }
+                if let expected = nameChecks[locationID], record.locations[index].name != expected { throw EarthProjectStoreError.changedLocation }
                 try record.locations[index].apply(edit)
             }
         }
@@ -142,9 +193,17 @@ actor EarthProjectStore
         }
     }
 
-    func addLocation(id: UUID, center: EarthGeographicOrigin, title: String) async throws -> EarthProjectRecord
+    func addLocation(id: UUID, center: EarthGeographicOrigin, title: String? = nil) async throws -> EarthProjectRecord
     {
-        let location = EarthLocationRecord(date: Date(), title: title, area: .init(center: center))
+        let name: EarthLocationName
+        if let title { name = .custom(title) }
+        else
+        {
+            let city = try await cityLookup(center)
+            name = .automatic(city: city)
+        }
+        try name.validate()
+        let location = EarthLocationRecord(date: Date(), name: name, area: .init(center: center))
         return try await mutate(id: id)
         { record in
             record.locations.append(location)
@@ -158,16 +217,24 @@ actor EarthProjectStore
         { record in
             guard let original = record.locations.first(where: { $0.id == locationID }) else { throw EarthProjectStoreError.locationNotFound }
             let detail: EarthProjectDetail
+            let area: EarthLocationArea
             if let captureID
             {
                 guard let variant = original.variants.first(where: { $0.id == captureID }) else { throw EarthProjectStoreError.captureNotFound }
                 detail = variant.detail
+                area = variant.capture.request == (try? original.area.request(detail: variant.detail)) ? original.area : variant.capture.area
             }
-            else { detail = original.variantDetail ?? original.variants.last?.detail ?? .standard }
+            else { detail = original.variantDetail ?? original.variants.last?.detail ?? .standard; area = original.area }
+            let name: EarthLocationName
+            switch original.name
+            {
+                case let .automatic(city): name = .automatic(city: city)
+                case .custom: name = .custom(String((original.displayTitle + " Copy").prefix(100)))
+            }
             let copy = EarthLocationRecord(
                 date: Date(),
-                title: String((original.displayTitle + " Copy").prefix(100)),
-                area: original.area,
+                name: name,
+                area: area,
                 detail: detail
             )
             record.locations.append(copy)
@@ -184,17 +251,6 @@ actor EarthProjectStore
         }
     }
 
-    func addVariant(id: UUID, locationID: UUID) async throws -> EarthProjectRecord
-    {
-        try await mutate(id: id)
-        { record in
-            guard let index = record.locations.firstIndex(where: { $0.id == locationID }) else { throw EarthProjectStoreError.locationNotFound }
-            guard record.locations[index].variantDetail == nil else { return }
-            record.locations[index].variantDetail = record.locations[index].variants.last?.detail ?? .standard
-            record.editingLocationID = locationID
-        }
-    }
-
     /// Freeze and pin one exact location/detail before transport. Editing and
     /// operation selection are independent; neither is inferred from map search.
     func recordCapture(id: UUID, capture: EarthProjectCapture, selection: EarthConfirmedSelection) async throws -> EarthProjectRecord
@@ -206,37 +262,146 @@ actor EarthProjectStore
         { record in
             guard let index = record.locations.firstIndex(where: { $0.id == selection.locationID }) else { throw EarthProjectStoreError.locationNotFound }
             let location = record.locations[index]
-            if let existing = record.captures.first(where: { $0.id == capture.id })
+            if let existing = record.captures.first(where: { $0.capture.id == capture.id })
             {
                 guard existing.capture == capture, existing.locationID == selection.locationID else { throw EarthProjectStoreError.sourceMismatch }
+                record.selectedCaptureID = existing.id
             }
             else
             {
-                guard location.area == selection.area, location.variantDetail == selection.detail else { throw EarthProjectStoreError.changedLocation }
+                guard location.area == selection.area, location.nextVariantDetail == selection.detail else { throw EarthProjectStoreError.changedLocation }
                 let date = Date()
                 if location.frozenAt == nil { record.locations[index].frozenAt = date }
                 record.locations[index].variants.append(.init(capture: capture, locationID: location.id, detail: selection.detail, createdAt: date))
                 record.locations[index].variantDetail = nil
+                record.selectedCaptureID = capture.id
             }
-            record.selectedCaptureID = capture.id
         }
     }
 
-    func recordPreparation(id: UUID, preparation: EarthProjectPreparation) async throws -> EarthProjectRecord
+    /// An unused variant can change detail offline. Retain its original empty
+    /// journal as history rather than rewriting a registered source request.
+    func changeVariantDetail(id: UUID, captureID: UUID, detail: EarthProjectDetail) async throws -> EarthProjectRecord
     {
-        let current = try await open(id: id)
-        guard let archive = current.archive, current.record.currentCapture?.id == preparation.captureID
+        let current = try await record(id: id)
+        guard let previous = current.captures.first(where: { $0.id == captureID }) else { throw EarthProjectStoreError.captureNotFound }
+        if previous.detail == detail { return current }
+        let status = try await captureStatus(id: id, variant: previous)
+        guard status.canChangeDetail else { throw EarthProjectStoreError.lockedVariantDetail }
+        let request = try EarthDownloadRequest(
+            center: previous.capture.request.center,
+            widthMeters: previous.capture.request.widthMeters,
+            depthMeters: previous.capture.request.depthMeters,
+            maximumGeometricErrorMeters: detail.errorMeters
+        )
+        let directory = try await files.newArtifactDirectory(projectID: id, kind: .sources)
+        let archive = try await EarthSourceArchive.create(request: request, directoryURL: directory)
+        guard let sourceID = UUID(uuidString: archive.directoryURL.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
+        let capture = EarthProjectCapture(id: sourceID, request: request)
+        return try await mutate(id: id)
+        { record in
+            guard let locationIndex = record.locations.firstIndex(where: { $0.id == previous.locationID }),
+                  let variantIndex = record.locations[locationIndex].variants.firstIndex(where: { $0.id == captureID }),
+                  record.locations[locationIndex].variants[variantIndex] == previous
+            else { throw EarthProjectStoreError.sourceMismatch }
+            record.locations[locationIndex].variants[variantIndex] = EarthProjectCaptureVariant(
+                id: previous.id,
+                capture: capture,
+                locationID: previous.locationID,
+                detail: detail,
+                createdAt: previous.createdAt,
+                previousCaptures: previous.previousCaptures + [previous.capture]
+            )
+        }
+    }
+
+    func areaAdjustment(id: UUID, locationID: UUID) async throws -> EarthLocationAreaAdjustment
+    {
+        let location = try await adjustableLocation(id: id, locationID: locationID)
+        return EarthLocationAreaAdjustment(location: location)
+    }
+
+    /// All replacement journals are created offline before one metadata save
+    /// publishes the shared box and every current variant source together.
+    func applyAreaAdjustment(id: UUID, adjustment: EarthLocationAreaAdjustment) async throws -> EarthProjectRecord
+    {
+        let location = try await adjustableLocation(id: id, locationID: adjustment.locationID)
+        guard adjustment.matches(location) else { throw EarthProjectStoreError.changedLocation }
+        _ = try adjustment.area.request(detail: .standard)
+        if adjustment.area == location.area { return try await record(id: id) }
+        let name: EarthLocationName
+        if case .automatic = location.name, adjustment.area.center != location.area.center
+        {
+            let city = try await cityLookup(adjustment.area.center)
+            name = .automatic(city: city)
+            try name.validate()
+        }
+        else { name = location.name }
+        var replacements: [EarthProjectCapture] = []
+        for variant in location.variants
+        {
+            try Task.checkCancellation()
+            let request = try adjustment.area.request(detail: variant.detail)
+            let directory = try await files.newArtifactDirectory(projectID: id, kind: .sources)
+            let archive = try await EarthSourceArchive.create(request: request, directoryURL: directory)
+            guard let sourceID = UUID(uuidString: archive.directoryURL.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
+            replacements.append(EarthProjectCapture(id: sourceID, request: archive.request))
+        }
+        // Actor suspension while creating journals can admit another operation.
+        // Recheck completion and the exact snapshot before publishing any source.
+        let verified = try await adjustableLocation(id: id, locationID: adjustment.locationID)
+        guard adjustment.matches(verified) else { throw EarthProjectStoreError.changedLocation }
+        let captures = replacements
+        return try await mutate(id: id)
+        { record in
+            guard let locationIndex = record.locations.firstIndex(where: { $0.id == adjustment.locationID }),
+                  adjustment.matches(record.locations[locationIndex])
+            else { throw EarthProjectStoreError.changedLocation }
+            for (variantIndex, capture) in captures.enumerated()
+            {
+                let previous = record.locations[locationIndex].variants[variantIndex]
+                record.locations[locationIndex].variants[variantIndex] = EarthProjectCaptureVariant(
+                    id: previous.id,
+                    capture: capture,
+                    locationID: previous.locationID,
+                    detail: previous.detail,
+                    createdAt: previous.createdAt,
+                    previousCaptures: previous.previousCaptures + [previous.capture]
+                )
+            }
+            record.locations[locationIndex].area = adjustment.area
+            record.locations[locationIndex].name = name
+        }
+    }
+
+    private func adjustableLocation(id: UUID, locationID: UUID) async throws -> EarthLocationRecord
+    {
+        let record = try await record(id: id)
+        guard let location = record.locations.first(where: { $0.id == locationID }) else { throw EarthProjectStoreError.locationNotFound }
+        guard !location.variants.isEmpty else { throw EarthProjectStoreError.frozenLocation }
+        for variant in location.variants
+        {
+            guard try await captureStatus(id: id, variant: variant).canChangeArea else { throw EarthProjectStoreError.capturedLocation }
+        }
+        return location
+    }
+
+    func recordPreparation(id: UUID, variantID: UUID, preparation: EarthProjectPreparation) async throws -> EarthProjectRecord
+    {
+        let current = try await openVariant(id: id, variantID: variantID)
+        guard current.variant.capture.id == preparation.captureID
         else { throw EarthProjectStoreError.sourceMismatch }
         let url = try await files.resolve(reference: preparation.reference, projectID: id)
         let prepared = try await EarthPreparedCollection.open(directoryURL: url)
-        guard prepared.profile == preparation.profile, try await prepared.matchesSource(archive)
+        guard prepared.profile == preparation.profile, try await prepared.matchesSource(current.archive)
         else { throw EarthProjectStoreError.sourceMismatch }
         return try await mutate(id: id)
         { record in
-            guard record.currentCapture?.id == preparation.captureID else { throw EarthProjectStoreError.sourceMismatch }
-            guard let locationIndex = record.locations.firstIndex(where: { $0.variants.contains { $0.id == preparation.captureID } }),
-                  let variantIndex = record.locations[locationIndex].variants.firstIndex(where: { $0.id == preparation.captureID })
+            guard let locationIndex = record.locations.firstIndex(where: { $0.variants.contains { $0.id == variantID } }),
+                  let variantIndex = record.locations[locationIndex].variants.firstIndex(where: { $0.id == variantID })
             else { throw EarthProjectStoreError.captureNotFound }
+            guard record.locations[locationIndex].variants[variantIndex].capture == current.variant.capture
+            else { throw EarthProjectStoreError.sourceMismatch }
             record.locations[locationIndex].variants[variantIndex].preparation = preparation
         }
     }
@@ -269,15 +434,34 @@ actor EarthProjectStore
             try Task.checkCancellation()
             do
             {
-                let url = try await files.resolve(reference: variant.capture.reference, projectID: id)
-                let archive = try await EarthSourceArchive.open(directoryURL: url)
-                guard archive.request == variant.capture.request else { throw EarthProjectStoreError.sourceMismatch }
-                statuses[variant.id] = .init(archive: archive, errorMessage: archive.interruptionReason)
+                statuses[variant.id] = try await captureStatus(id: id, variant: variant)
             }
             catch is CancellationError { throw CancellationError() }
             catch { statuses[variant.id] = .init(archive: nil, errorMessage: error.localizedDescription) }
         }
         return statuses
+    }
+
+    private func captureStatus(id: UUID, variant: EarthProjectCaptureVariant) async throws -> EarthProjectCaptureStatus
+    {
+        let url = try await files.resolve(reference: variant.capture.reference, projectID: id)
+        let archive = try await EarthSourceArchive.open(directoryURL: url)
+        guard archive.request == variant.capture.request else { throw EarthProjectStoreError.sourceMismatch }
+        var canChangeArea = variant.preparation == nil && archive.state != .downloaded
+        var canChangeDetail = variant.preparation == nil && EarthProjectCaptureStatus.isUnstarted(archive)
+        if canChangeArea
+        {
+            for previous in variant.previousCaptures
+            {
+                try Task.checkCancellation()
+                let previousURL = try await files.resolve(reference: previous.reference, projectID: id)
+                let previousArchive = try await EarthSourceArchive.open(directoryURL: previousURL)
+                guard previousArchive.request == previous.request else { throw EarthProjectStoreError.sourceMismatch }
+                if previousArchive.state == .downloaded { canChangeArea = false }
+                if !EarthProjectCaptureStatus.isUnstarted(previousArchive) { canChangeDetail = false }
+            }
+        }
+        return .init(archive: archive, errorMessage: archive.interruptionReason, canChangeDetail: canChangeDetail, canChangeArea: canChangeArea)
     }
 
     func open(id: UUID) async throws -> EarthOpenedProject
@@ -286,29 +470,38 @@ actor EarthProjectStore
         return try await Self.open(record: record, files: files)
     }
 
+    func openVariant(id: UUID, variantID: UUID) async throws -> EarthOpenedVariant
+    {
+        let record = try await record(id: id)
+        return try await Self.openVariant(record: record, variantID: variantID, files: files)
+    }
+
     private static func open(record: EarthProjectRecord, files: EarthAppFiles) async throws -> EarthOpenedProject
     {
-        let id = record.id
-        try record.validate(id: id)
-        var archive: EarthSourceArchive?
-        if let capture = record.currentCapture
-        {
-            let url = try await files.resolve(reference: capture.reference, projectID: id)
-            let source = try await EarthSourceArchive.open(directoryURL: url)
-            guard source.request == capture.request else { throw EarthProjectStoreError.sourceMismatch }
-            archive = source
-        }
+        try record.validate(id: record.id)
+        guard let variantID = record.selectedCaptureID else { return .init(record: record, archive: nil, prepared: nil) }
+        let opened = try await openVariant(record: record, variantID: variantID, files: files)
+        return .init(record: record, archive: opened.archive, prepared: opened.prepared)
+    }
+
+    private static func openVariant(record: EarthProjectRecord, variantID: UUID, files: EarthAppFiles) async throws -> EarthOpenedVariant
+    {
+        guard let location = record.locations.first(where: { $0.variants.contains { $0.id == variantID } }),
+              let variant = location.variants.first(where: { $0.id == variantID })
+        else { throw EarthProjectStoreError.captureNotFound }
+        let sourceURL = try await files.resolve(reference: variant.capture.reference, projectID: record.id)
+        let archive = try await EarthSourceArchive.open(directoryURL: sourceURL)
+        guard archive.request == variant.capture.request else { throw EarthProjectStoreError.sourceMismatch }
         var prepared: EarthPreparedCollection?
-        if let reference = record.currentPreparation
+        if let reference = variant.preparation
         {
-            guard let archive else { throw EarthProjectStoreError.sourceMismatch }
-            let url = try await files.resolve(reference: reference.reference, projectID: id)
+            let url = try await files.resolve(reference: reference.reference, projectID: record.id)
             let models = try await EarthPreparedCollection.open(directoryURL: url)
             guard models.profile == reference.profile, try await models.matchesSource(archive)
             else { throw EarthProjectStoreError.sourceMismatch }
             prepared = models
         }
-        return EarthOpenedProject(record: record, archive: archive, prepared: prepared)
+        return EarthOpenedVariant(location: location, variant: variant, archive: archive, prepared: prepared)
     }
 
     func library() async throws -> EarthProjectLibrary
@@ -356,7 +549,7 @@ actor EarthProjectStore
                 try await files.trashCaptures(
                     projectID: id,
                     deletionID: deletionID,
-                    captureIDs: removed.map(\.id),
+                    captureIDs: removed.flatMap(\.sourceCaptures).map(\.id),
                     preparationIDs: Array(preparedIDs),
                     originalMetadata: metadata,
                     updatedMetadata: Self.encode(record)

@@ -41,7 +41,7 @@ func projectStoreTestRoot() throws -> URL
     #expect(try await store.record(id: first.id).locations == reopened.record.locations)
 }
 
-private enum InvalidProjectRecord: CaseIterable, Sendable { case version, missingNullable, folderIdentity, missingFreeze }
+private enum InvalidProjectRecord: CaseIterable, Sendable { case version, missingNullable, folderIdentity, missingFreeze, missingVariantID, missingAttemptHistory, missingName }
 
 @Test(arguments: InvalidProjectRecord.allCases)
 private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenario: InvalidProjectRecord) async throws
@@ -53,17 +53,34 @@ private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenar
     let store = EarthProjectStore(files: files)
     let good = try await store.create()
     let empty = try await store.create()
-    let damaged = try await store.addLocation(id: empty.id, center: EarthGeographicOrigin(latitude: 0, longitude: 0), title: "Draft")
+    var damaged = try await store.addLocation(id: empty.id, center: EarthGeographicOrigin(latitude: 0, longitude: 0), title: "Draft")
+    if scenario == .missingVariantID || scenario == .missingAttemptHistory
+    {
+        let selection = try EarthConfirmedSelection(location: #require(damaged.editingLocation))
+        let url = try await files.newArtifactDirectory(projectID: empty.id, kind: .sources)
+        let source = try await EarthSourceArchive.create(request: selection.request, directoryURL: url)
+        damaged = try await store.recordCapture(id: empty.id, capture: .init(id: #require(UUID(uuidString: url.lastPathComponent)), request: source.request), selection: selection)
+    }
     let bytes = try #require(try await files.readMetadata(.project(damaged.id)))
     var json = try #require(try JSONSerialization.jsonObject(with: bytes) as? [String: Any])
     switch scenario
     {
-        case .version: json["version"] = 2
+        case .version: json["version"] = 4
         case .missingNullable: json.removeValue(forKey: "selectedCaptureID")
         case .folderIdentity: json["id"] = good.id.uuidString
         case .missingFreeze:
             var locations = try #require(json["locations"] as? [[String: Any]])
             locations[0].removeValue(forKey: "frozenAt")
+            json["locations"] = locations
+        case .missingName:
+            var locations = try #require(json["locations"] as? [[String: Any]])
+            locations[0].removeValue(forKey: "name")
+            json["locations"] = locations
+        case .missingVariantID, .missingAttemptHistory:
+            var locations = try #require(json["locations"] as? [[String: Any]])
+            var variants = try #require(locations[0]["variants"] as? [[String: Any]])
+            variants[0].removeValue(forKey: scenario == .missingVariantID ? "id" : "previousCaptures")
+            locations[0]["variants"] = variants
             json["locations"] = locations
     }
     let invalid = try JSONSerialization.data(withJSONObject: json)
@@ -76,7 +93,7 @@ private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenar
 
 /// Reuse the existing independent orientation GLB. SDK journal/preparer APIs
 /// construct a real current artifact; no app test reimplements their codecs.
-func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: EarthSourceArchive? = nil, placements: Int = 1, mipmapped: Bool = false, origin: EarthGeographicOrigin? = nil) async throws -> EarthSourceArchive
+func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: EarthSourceArchive? = nil, placements: Int = 1, mipmapped: Bool = false, origin: EarthGeographicOrigin? = nil, state: EarthSourceArchive.State = .downloaded) async throws -> EarthSourceArchive
 {
     let directory: URL
     let request: EarthDownloadRequest
@@ -115,7 +132,7 @@ func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: Earth
         try index.place(tile: tile, run: run, ordinal: ordinal)
     }
     try EarthSourceMetadata.publishManifest(index: index, request: request)
-    try index.finish(state: .downloaded)
+    try index.finish(state: state)
     return try index.snapshot()
 }
 
@@ -152,7 +169,7 @@ func projectRegisterSource(files: EarthAppFiles, store: EarthProjectStore, proje
     let url = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
     let profile = try EarthPreparationProfile()
     _ = try await EarthModelPreparer().prepare(archive: raw, directoryURL: url, profile: profile)
-    _ = try await store.recordPreparation(id: project.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: capture.id, profile: profile))
+    _ = try await store.recordPreparation(id: project.id, variantID: #require(registered.selectedCaptureID), preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: capture.id, profile: profile))
     let searchResult = EarthMapSearchResult(address: "New York", title: "New York", origin: try EarthGeographicOrigin(latitude: 40, longitude: -74))
     _ = try await store.updateEditor(id: project.id, searchAddress: searchResult.address)
     _ = try await store.recordSearch(id: project.id, result: searchResult)
@@ -213,7 +230,7 @@ func projectLocationVariantsRetainGeometryAndPreparation(secondPaused: Bool) asy
         let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: source)
         let url = try await files.newArtifactDirectory(projectID: project.id, kind: .prepared)
         _ = try await EarthModelPreparer().prepare(archive: completed, directoryURL: url, profile: profile)
-        _ = try await store.recordPreparation(id: project.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: #require(UUID(uuidString: sourceURL.lastPathComponent)), profile: profile))
+        _ = try await store.recordPreparation(id: project.id, variantID: #require(try await store.record(id: project.id).selectedCaptureID), preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: #require(UUID(uuidString: sourceURL.lastPathComponent)), profile: profile))
         preparedURLs.append(url)
     }
     let frozen = try #require(try await store.record(id: project.id).editingLocation)

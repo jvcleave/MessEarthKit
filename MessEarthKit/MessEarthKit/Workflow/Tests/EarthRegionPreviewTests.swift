@@ -16,14 +16,14 @@ private func regionPreviewFixture(root: URL, origin: EarthGeographicOrigin? = ni
     let url = try await files.newArtifactDirectory(projectID: record.id, kind: .prepared)
     let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
     let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: url, profile: profile)
-    _ = try await store.recordPreparation(id: record.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: capture.id, profile: profile))
+    _ = try await store.recordPreparation(id: record.id, variantID: capture.id, preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: capture.id, profile: profile))
     return (files, store, try await store.record(id: record.id), collection)
 }
 
-private func previewTestResult(collection: EarthPreparedCollection, progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void, validate: @escaping @Sendable () async throws -> Void) async throws -> EarthRegionPreviewResult
+private func previewTestResult(collection: EarthPreparedCollection, memoryLimit: EarthPreviewMemoryLimit = .automatic, displayMode: EarthPreviewDisplayMode = .textured, progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void, validate: @escaping @Sendable () async throws -> Void) async throws -> EarthRegionPreviewResult
 {
     let device = try #require(MTLCreateSystemDefaultDevice())
-    let scene = try await EarthRegionPreviewLoader(device: device).load(collection: collection, progress: progress, validateSource: validate)
+    let scene = try await EarthRegionPreviewLoader(device: device).load(collection: collection, memoryLimit: memoryLimit, displayMode: displayMode, progress: progress, validateSource: validate)
     let source = try String(contentsOf: #require(Bundle.module.url(forResource: "EarthPreviewShaders", withExtension: "metal")), encoding: .utf8)
     let library = try await device.makeLibrary(source: source, options: nil)
     return try .init(renderer: EarthPreviewRenderer(device: device, library: library), scene: scene, appearancePolicy: collection.profile.appearancePolicy)
@@ -63,7 +63,7 @@ private func regionPreviewComposesAllPartsWithFullBoundsAndMaterialResources(non
     }
     #expect(simd_distance(minimum, expectedMinimum) < 0.001 && simd_distance(maximum, expectedMaximum) < 0.001)
     #expect(scene.attributions == ["MessEarthKit reference fixture"])
-    let image = try #require(scene.meshes.first(where: { $0.texture.width == 2 })?.texture)
+    let image = try #require(scene.meshes.first(where: { $0.texture?.width == 2 })?.texture)
     #expect(image.mipmapLevelCount == 2)
     #expect(image.pixelFormat == .rgba8Unorm_srgb || image.pixelFormat == .bgra8Unorm_srgb)
     let device = image.device
@@ -82,6 +82,83 @@ private func regionPreviewComposesAllPartsWithFullBoundsAndMaterialResources(non
         return image.pixelFormat == .bgra8Unorm_srgb ? [color[2], color[1], color[0], color[3]] : color
     }
     #expect(corners == [[255, 0, 0, 255], [0, 255, 0, 255], [0, 0, 255, 255], [255, 255, 0, 255]])
+}
+
+// Distinct risks: texture-free admission/upload must contain no images or
+// samplers, and the real renderer must draw lines rather than filled triangles.
+@Test private func regionPreviewGeometryModesSkipImagesAndRenderSolidOrWireframe() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = try await regionPreviewFixture(root: root)
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let capture = try await fixture.collection.importModel(id: 1)
+    let texturedCost = try EarthPreviewSceneBuilder(device: device).memoryCost(capture: capture)
+    let source = try String(contentsOf: #require(Bundle.module.url(forResource: "EarthPreviewShaders", withExtension: "metal")), encoding: .utf8)
+    let library = try await device.makeLibrary(source: source, options: nil)
+    let renderer = try EarthPreviewRenderer(device: device, library: library)
+    var coverage: [Int] = []
+    for mode in [EarthPreviewDisplayMode.solid, .wireframe]
+    {
+        let builder = try EarthPreviewSceneBuilder(device: device, displayMode: mode)
+        let cost = try builder.memoryCost(capture: capture)
+        #expect(cost.textureBytes == 0 && builder.constantTextureBytes == 0)
+        #expect(cost.geometryBytes == texturedCost.geometryBytes && texturedCost.textureBytes > 0)
+        let scene = try await EarthRegionPreviewLoader(device: device).load(
+            collection: fixture.collection,
+            displayMode: mode,
+            progress: { _ in },
+            validateSource: {}
+        )
+        #expect(scene.displayMode == mode && scene.modelCount == 3)
+        #expect(scene.meshes.allSatisfy { $0.texture == nil && $0.sampler == nil })
+        #expect(scene.meshes.reduce(0) { $0 + $1.indexCount } == 126)
+        #expect(simd_distance(scene.bounds.minimum, SIMD3(1, 1, 0.5)) < 0.001 && simd_distance(scene.bounds.maximum, SIMD3(25, 5, 1.3)) < 0.001)
+        coverage.append(try await geometryPreviewCoverage(scene: scene, renderer: renderer))
+    }
+    // Compare coverage, not a golden color derived from the shader itself.
+    #expect(coverage[1] > 0 && coverage[0] > coverage[1])
+    #expect(try await fixture.store.record(id: fixture.record.id) == fixture.record)
+}
+
+private func geometryPreviewCoverage(scene: EarthPreparedPreview, renderer: EarthPreviewRenderer) async throws -> Int
+{
+    let device = renderer.device
+    let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .bgra8Unorm_srgb, width: 64, height: 64, mipmapped: false)
+    descriptor.storageMode = .private
+    descriptor.usage = .renderTarget
+    let color = try #require(device.makeTexture(descriptor: descriptor))
+    descriptor.pixelFormat = .depth32Float
+    let depth = try #require(device.makeTexture(descriptor: descriptor))
+    let pass = MTLRenderPassDescriptor()
+    pass.colorAttachments[0].texture = color
+    pass.colorAttachments[0].loadAction = .clear
+    pass.colorAttachments[0].storeAction = .store
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 0)
+    pass.depthAttachment.texture = depth
+    pass.depthAttachment.loadAction = .clear
+    pass.depthAttachment.storeAction = .dontCare
+    pass.depthAttachment.clearDepth = 1
+    let command = try #require(device.makeCommandQueue()?.makeCommandBuffer())
+    let encoder = try #require(command.makeRenderCommandEncoder(descriptor: pass))
+    let scale = SIMD3<Float>(1.6, 1.6, 0.6) / simd_max(scene.bounds.dimensions, SIMD3(repeating: 0.001))
+    let projection = simd_float4x4(columns: (
+        SIMD4(scale.x, 0, 0, 0),
+        SIMD4(0, scale.y, 0, 0),
+        SIMD4(0, 0, scale.z, 0),
+        SIMD4(-scene.bounds.center.x * scale.x, -scene.bounds.center.y * scale.y, 0.2 - scene.bounds.minimum.z * scale.z, 1)
+    ))
+    renderer.encode(scene: scene, viewProjection: projection, eye: .zero, encoder: encoder)
+    encoder.endEncoding()
+    let readback = try #require(device.makeBuffer(length: 64 * 256, options: .storageModeShared))
+    let blit = try #require(command.makeBlitCommandEncoder())
+    blit.copy(from: color, sourceSlice: 0, sourceLevel: 0, sourceOrigin: .init(x: 0, y: 0, z: 0), sourceSize: .init(width: 64, height: 64, depth: 1), to: readback, destinationOffset: 0, destinationBytesPerRow: 256, destinationBytesPerImage: 64 * 256)
+    blit.endEncoding()
+    command.commit()
+    await command.completed()
+    try #require(command.status == .completed)
+    let pixels = readback.contents().assumingMemoryBound(to: UInt8.self)
+    return (0 ..< 64 * 64).reduce(0) { $0 + (pixels[$1 * 4 + 3] == 0 ? 0 : 1) }
 }
 
 private final class PreviewProgressRecord: @unchecked Sendable
@@ -117,6 +194,7 @@ private func regionPreviewRejectsWholeSceneOrCancelsWithoutChangingSavedArtifact
     {
         try await EarthRegionPreviewLoader(device: device).load(
             collection: fixture.collection,
+            displayMode: .textured,
             budget: interruption == .aggregateBudget ? budget : nil,
             progress: { progress in
                 events.record(progress)
@@ -130,6 +208,16 @@ private func regionPreviewRejectsWholeSceneOrCancelsWithoutChangingSavedArtifact
     {
         await #expect(throws: EarthRegionPreviewError.workingSet) { try await worker.value }
         #expect(events.uploadCount == 0)
+        try budget.admit(sceneBytes: builder.constantTextureBytes + partBytes, largestPartBytes: partBytes)
+        let part = try await EarthRegionPreviewLoader(device: device).load(
+            collection: fixture.collection,
+            modelID: 2,
+            progress: { _ in },
+            validateSource: {}
+        )
+        #expect(part.modelCount == 1 && part.meshes.count == 2 && part.displayMode == .wireframe)
+        // The second authored placement retains its 10 m shared-frame offset.
+        #expect(abs(part.bounds.minimum.x - 11) < 0.001 && abs(part.bounds.maximum.x - 15) < 0.001)
     }
     else
     {
@@ -138,6 +226,18 @@ private func regionPreviewRejectsWholeSceneOrCancelsWithoutChangingSavedArtifact
     }
     let reopened = try await fixture.store.open(id: fixture.record.id)
     #expect(reopened.record == fixture.record && reopened.archive?.state == .downloaded && reopened.prepared?.coversEntireSource == true)
+}
+
+@Test func regionPreviewCustomMemoryLimitValidatesUnitsAndOverflow() throws
+{
+    let custom = try EarthPreviewMemoryLimit(gibibytes: "8.5")
+    #expect(try custom.resolvedBytes(recommendedWorkingSetSize: 2 * 1024 * 1024 * 1024) == 9126805504)
+    #expect(try EarthPreviewMemoryLimit.automatic.resolvedBytes(recommendedWorkingSetSize: 64 * 1024 * 1024 * 1024) == 32 * 1024 * 1024 * 1024)
+    #expect(try EarthPreviewMemoryLimit.automatic.resolvedBytes(recommendedWorkingSetSize: 1024 * 1024 * 1024) == 512 * 1024 * 1024)
+    // Invalid number, non-positive amount, non-finite input, integer overflow
+    // and a positive amount that converts to zero must each reject explicitly.
+    for input in ["", "0", "nan", "1e100", "1e-100"]
+    { #expect(throws: EarthRegionPreviewError.invalidMemoryBudget) { try EarthPreviewMemoryLimit(gibibytes: input) } }
 }
 
 @Test func regionPreviewAdmissionIncludesExistingSceneTransientUploadAndOverflow() throws
@@ -166,12 +266,18 @@ private func regionPreviewRejectsWholeSceneOrCancelsWithoutChangingSavedArtifact
 
 private actor PreviewCompletionGate
 {
+    private(set) var memoryLimits: [EarthPreviewMemoryLimit] = []
+    private(set) var displayModes: [EarthPreviewDisplayMode] = []
+    private(set) weak var scene: EarthPreparedPreview?
     private var entered = false
     private var released = false
     private var entry: CheckedContinuation<Void, Never>?
     private var completion: CheckedContinuation<Void, Never>?
-    func pause() async
+    func pause(memoryLimit: EarthPreviewMemoryLimit, scene: EarthPreparedPreview) async
     {
+        memoryLimits.append(memoryLimit)
+        displayModes.append(scene.displayMode)
+        self.scene = scene
         entered = true
         entry?.resume()
         entry = nil
@@ -205,19 +311,29 @@ private enum PreviewCompletion: CaseIterable, Sendable { case visible, hidden, c
         projectID: fixture.record.id,
         files: fixture.files,
         store: fixture.store,
-        build: { collection, progress, validate in
-            let result = try await previewTestResult(collection: collection, progress: progress, validate: validate)
+        build: { collection, _, memoryLimit, displayMode, progress, validate in
+            let result = try await previewTestResult(collection: collection, memoryLimit: memoryLimit, displayMode: displayMode, progress: progress, validate: validate)
             // Simulate completion already produced by a worker that has not yet
             // observed cancellation or replacement of the recorded source.
-            await gate.pause()
+            await gate.pause(memoryLimit: memoryLimit, scene: result.scene)
             if outcome == .failed { throw EarthRegionPreviewError.allocation }
             return result
         }
     )
     let preview = EarthRegionPreviewViewModel(service: service)
+    if outcome == .visible
+    {
+        preview.setUsesAutomaticMemoryBudget(false)
+        preview.setCustomMemoryBudgetGiB("8")
+    }
     preview.setVisible(true)
     preview.show(fixture.collection)
     await gate.waitForEntry()
+    if outcome == .visible
+    {
+        preview.setDisplayMode(.textured, collection: fixture.collection)
+        #expect(preview.displayMode == .wireframe)
+    }
     var replacement: EarthSourceArchive?
     if outcome == .hidden { preview.setVisible(false) }
     if outcome == .cancelled { preview.cancel() }
@@ -235,6 +351,31 @@ private enum PreviewCompletion: CaseIterable, Sendable { case visible, hidden, c
     #expect((preview.errorMessage != nil) == (outcome == .replacedSource || outcome == .failed))
     if outcome == .visible
     {
+        let firstLimits = await gate.memoryLimits
+        #expect(firstLimits == [.customBytes(8589934592)])
+        preview.setCustomMemoryBudgetGiB("0")
+        preview.reload(fixture.collection)
+        #expect(preview.hasPreview && !preview.isLoading && preview.memoryBudgetError != nil)
+        preview.setCustomMemoryBudgetGiB("6")
+        // Reusing the same collection must not reuse a preview with an old limit.
+        preview.show(fixture.collection)
+        try await settlePreview(preview)
+        let reloadedLimits = await gate.memoryLimits
+        #expect(reloadedLimits == [.customBytes(8589934592), .customBytes(6442450944)])
+        let retainedRenderer = try #require(preview.renderer)
+        weak let previousScene = await gate.scene
+        #expect(previousScene != nil)
+        preview.setDisplayMode(.textured, collection: fixture.collection)
+        // A view can still retain the old renderer while SwiftUI updates it.
+        // Clear its scene immediately so switching modes frees its textures.
+        withExtendedLifetime(retainedRenderer) { #expect(previousScene == nil) }
+        try await settlePreview(preview)
+        let modes = await gate.displayModes
+        #expect(modes == [.wireframe, .wireframe, .textured] && preview.hasPreview)
+        preview.show(fixture.collection)
+        #expect(!preview.isLoading)
+        preview.setUsesAutomaticMemoryBudget(true)
+        #expect(preview.memoryBudgetError == nil)
         preview.setVisible(false)
         #expect(preview.renderer == nil && !preview.hasPreview)
     }
@@ -254,6 +395,7 @@ private enum PreviewCompletion: CaseIterable, Sendable { case visible, hidden, c
         _ = try await EarthModelPreparer().prepare(archive: replacement, directoryURL: url, profile: profile)
         _ = try await fixture.store.recordPreparation(
             id: fixture.record.id,
+            variantID: #require(try await fixture.store.record(id: fixture.record.id).selectedCaptureID),
             preparation: .init(id: #require(UUID(uuidString: url.lastPathComponent)), captureID: #require(UUID(uuidString: replacement.directoryURL.lastPathComponent)), profile: profile)
         )
         let refreshed = try await fixture.store.open(id: fixture.record.id)

@@ -20,6 +20,7 @@ struct EarthGeometrySubdivision
         guard estimate.vertexCount <= Self.maximumSourceVertices, estimate.indexCount <= Self.maximumSourceVertices * 3 else { throw EarthPreparationError.subdivisionWorkingSet }
         guard profile.maximumVerticesPerModel >= 3, profile.maximumIndicesPerModel >= 3 else { throw EarthPreparationError.invalidProfile }
         let part = try EarthGLBDecoder(limits: limits).decode(data: data, transform: matrix_identity_double4x4)
+        var omittedDegenerateTriangleCount = part.omittedDegenerateTriangleCount
         for mesh in part.meshes
         {
             try Task.checkCancellation()
@@ -30,14 +31,14 @@ struct EarthGeometrySubdivision
             {
                 try EarthTextureSubdivision(profile: profile).write(mesh: mesh, material: material)
                 { clipped, cropped in
-                    try writeMesh(clipped, material: cropped, attributions: part.attributions, sourceID: sourceID, maximumPayloadBytes: maximumPayloadBytes, emit: emit)
+                    try writeMesh(clipped, material: cropped, attributions: part.attributions, sourceID: sourceID, maximumPayloadBytes: maximumPayloadBytes, omittedDegenerateTriangleCount: &omittedDegenerateTriangleCount, emit: emit)
                 }
             }
-            else { try writeMesh(mesh, material: material, attributions: part.attributions, sourceID: sourceID, maximumPayloadBytes: maximumPayloadBytes, emit: emit) }
+            else { try writeMesh(mesh, material: material, attributions: part.attributions, sourceID: sourceID, maximumPayloadBytes: maximumPayloadBytes, omittedDegenerateTriangleCount: &omittedDegenerateTriangleCount, emit: emit) }
         }
     }
 
-    private func writeMesh(_ mesh: EarthMesh, material: EarthMaterial, attributions: [String], sourceID: String, maximumPayloadBytes: Int, emit: (Data, EarthCaptureGeometryEstimate) throws -> Void) throws
+    private func writeMesh(_ mesh: EarthMesh, material: EarthMaterial, attributions: [String], sourceID: String, maximumPayloadBytes: Int, omittedDegenerateTriangleCount: inout Int, emit: (Data, EarthCaptureGeometryEstimate) throws -> Void) throws
     {
         var cursor = 0
         while cursor < mesh.triangleIndices.count
@@ -70,12 +71,14 @@ struct EarthGeometrySubdivision
                     }
                     next += 3
                 }
-                let bytes = try EarthDerivativeGLB.encode(vertices: vertices, indices: indices, material: material, name: mesh.name, attributions: attributions, sourceID: sourceID, preparationProfile: profile)
+                let bytes = try EarthDerivativeGLB.encode(vertices: vertices, indices: indices, material: material, name: mesh.name, attributions: attributions, sourceID: sourceID, preparationProfile: profile, omittedDegenerateTriangleCount: omittedDegenerateTriangleCount)
                 if bytes.count <= maximumPayloadBytes
                 {
                     let texture = material.baseColorTexture
                     let estimate = try EarthCaptureGeometryEstimate(vertices: vertices.count, indices: indices.count, textureBytes: texture.map { $0.width * $0.height * 4 } ?? 0, textureDimension: texture.map { max($0.width, $0.height) } ?? 0)
                     try emit(bytes, estimate)
+                    // The count belongs to this source, not to every split part.
+                    omittedDegenerateTriangleCount = 0
                     cursor = next
                     break
                 }

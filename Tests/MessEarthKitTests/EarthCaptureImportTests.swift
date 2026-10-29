@@ -1,5 +1,5 @@
 import Foundation
-import MessEarthKit
+@testable import MessEarthKit
 import simd
 import Testing
 
@@ -211,4 +211,101 @@ func automaticSectionsPreserveAlignmentAndSaveIndependentSources(textureBudget: 
         return try await importer.importFile(fileURL: fixtureDirectory.appendingPathComponent("tileset.json"))
     }
     await #expect(throws: CancellationError.self) { try await task.value }
+}
+
+// Analytic source geometry exercises exact degeneracy, small valid surfaces,
+// translation cancellation and reflected/nonuniform transforms independently.
+func flatNormalFixture(positions: [SIMD3<Float>], indices: [UInt32], transform: simd_double4x4 = matrix_identity_double4x4) throws -> Data
+{
+    let vertices = positions.map { EarthVertex(position: $0, normal: SIMD3(0, 0, 1), textureCoordinate: SIMD2($0.x, $0.y), color: SIMD4(0.2, 0.4, 0.6, 1)) }
+    let material = EarthMaterial(name: "Analytic", baseColor: SIMD4(repeating: 1), baseColorTexture: nil, metallic: 0, roughness: 1, isUnlit: false, isDoubleSided: false, alphaMode: .opaque, alphaCutoff: 0.5)
+    let source = try EarthDerivativeGLB.encode(vertices: vertices, indices: indices, material: material, name: "Analytic", attributions: [], sourceID: "analytic")
+    let length = Int(source.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)) })
+    var json = try #require(JSONSerialization.jsonObject(with: source.subdata(in: 20 ..< 20 + length)) as? [String: Any])
+    var meshes = try #require(json["meshes"] as? [[String: Any]])
+    var primitives = try #require(meshes[0]["primitives"] as? [[String: Any]])
+    var attributes = try #require(primitives[0]["attributes"] as? [String: Any])
+    attributes["NORMAL"] = nil
+    primitives[0]["attributes"] = attributes
+    meshes[0]["primitives"] = primitives
+    json["meshes"] = meshes
+    json["nodes"] = [["mesh": 0, "matrix": [transform.columns.0, transform.columns.1, transform.columns.2, transform.columns.3].flatMap { [$0.x, $0.y, $0.z, $0.w] }]]
+    var encoded = try JSONSerialization.data(withJSONObject: json)
+    while !encoded.count.isMultiple(of: 4) { encoded.append(32) }
+    let binary = source.suffix(from: 20 + length)
+    var result = Data()
+    for var word in [UInt32(0x46546C67), 2, UInt32(20 + encoded.count + binary.count), UInt32(encoded.count), 0x4E4F534A].map(\.littleEndian)
+    { withUnsafeBytes(of: &word) { result.append(contentsOf: $0) } }
+    result.append(encoded)
+    result.append(binary)
+    return result
+}
+
+@Test func flatNormalsOmitOnlyZeroAreaTrianglesAndRetainSourceBytes() async throws
+{
+    let source = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0), SIMD3(2, 0, 0)], indices: [0, 0, 1, 0, 1, 3, 0, 1, 2])
+    let capture = try await EarthCaptureImporter(limits: EarthImportLimits(maximumVertices: 4)).importSourceFiles(sourceFiles: [.init(relativePath: "analytic.glb", data: source)], rootSourcePath: "analytic.glb")
+    #expect(capture.triangleCount == 1 && capture.vertexCount == 3)
+    #expect(capture.omittedDegenerateTriangleCount == 2)
+    let mesh = try #require(capture.meshes.first)
+    #expect(mesh.vertices.map(\.position) == [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0)])
+    #expect(mesh.vertices.allSatisfy { $0.normal == SIMD3(0, 0, 1) && $0.textureCoordinate == SIMD2($0.position.x, $0.position.y) && $0.color == SIMD4(0.2, 0.4, 0.6, 1) })
+    #expect(capture.sourceFiles.first?.data == source)
+}
+
+private enum FlatNormalPrecision: CaseIterable, Sendable { case tiny, translated, reflected }
+
+@Test(arguments: FlatNormalPrecision.allCases)
+private func flatNormalsPreserveNonzeroSurfacesAndTransformedDirection(scenario: FlatNormalPrecision) async throws
+{
+    var transform = matrix_identity_double4x4
+    let positions: [SIMD3<Float>]
+    let expected: SIMD3<Float>
+    switch scenario
+    {
+        case .tiny:
+            positions = [.zero, SIMD3(0.000001, 0, 0), SIMD3(0, 0.000001, 0)]
+            expected = SIMD3(0, 0, 1)
+        case .translated:
+            transform.columns.3 = SIMD4(1e12, 1e12, 1e12, 1)
+            positions = [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0)]
+            expected = SIMD3(0, 0, 1)
+        case .reflected:
+            transform.columns.0.x = -2
+            transform.columns.1.y = 3
+            transform.columns.2.z = 4
+            positions = [.zero, SIMD3(1, 0, 1), SIMD3(0, 1, 1)]
+            expected = simd_normalize(SIMD3(6, -4, 3))
+    }
+    let source = try flatNormalFixture(positions: positions, indices: [0, 1, 2], transform: transform)
+    let capture = try await EarthCaptureImporter().importSourceFiles(sourceFiles: [.init(relativePath: "analytic.glb", data: source)], rootSourcePath: "analytic.glb")
+    #expect(capture.triangleCount == 1 && capture.omittedDegenerateTriangleCount == 0)
+    let mesh = try #require(capture.meshes.first)
+    #expect(mesh.vertices.allSatisfy { simd_distance($0.normal, expected) < 0.000001 })
+    if scenario == .reflected
+    {
+        let direction = simd_cross(mesh.vertices[1].position - mesh.vertices[0].position, mesh.vertices[2].position - mesh.vertices[0].position)
+        #expect(simd_dot(direction, expected) > 0)
+    }
+}
+
+@Test func flatNormalsRejectEntirelyDegenerateContent() async throws
+{
+    let source = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(2, 0, 0)], indices: [0, 0, 1, 0, 1, 2])
+    do
+    {
+        _ = try await EarthCaptureImporter().importSourceFiles(sourceFiles: [.init(relativePath: "analytic.glb", data: source)], rootSourcePath: "analytic.glb")
+        Issue.record("A scene with only zero-area surfaces was accepted.")
+    }
+    catch let EarthImportError.invalidContent(reason) { #expect(reason.contains("no usable triangle geometry")) }
+}
+
+@Test func flatNormalsStillRejectNonFiniteSourceGeometry() async throws
+{
+    var source = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0)], indices: [0, 0, 1, 0, 1, 2])
+    let length = Int(source.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)) })
+    var invalid = Float.infinity.bitPattern.littleEndian
+    withUnsafeBytes(of: &invalid) { source.replaceSubrange(28 + length ..< 32 + length, with: $0) }
+    await #expect(throws: EarthImportError.self)
+    { try await EarthCaptureImporter().importSourceFiles(sourceFiles: [.init(relativePath: "analytic.glb", data: source)], rootSourcePath: "analytic.glb") }
 }

@@ -3,7 +3,8 @@
 Status: milestones 1–4 implemented: app files, project library/Settings, MapKit
 confirmation, resumable Download, automatic preparation and whole-region Metal
 composition. Focused checks and the milestone-4 macOS build passed.
-The location model/lifecycle stage is implemented in schema 3, with basic
+The location model/lifecycle stage now uses schema 4, retaining stable variant
+identity and source-attempt history for in-place failed-area retries, with basic
 Add/Copy Location and detail-variant controls. The 18 app tests and macOS build
 passed; the existing draft's one-time metadata preservation was explicitly approved
 and applied through EarthAppFiles, preserving its editor values as one location.
@@ -48,11 +49,13 @@ controls and direct map gestures now follow the new hierarchy.
   direct resizing synchronized with the numeric fields. Keep normal map browsing
   distinct from area editing and retain the left-controls/right-map arrangement.
   Camera motion alone never changes a location. Do not auto-recenter during a
-  drag or perform reverse geocoding for every mouse update. Browse pans/zooms;
-  Edit Area moves the box and exposes eight edge/corner handles; Draw Area replaces
-  the draft rectangle. Live area previews update numeric fields without metadata
-  writes; release commits once after identity/frozen-area checks. Done leaves area
-  editing and restores map browsing. Escape, lost gestures or navigation discard
+  drag or perform reverse geocoding for every mouse update. The existing native
+  box stays visible and is directly editable; drag it to move, or use its eight
+  edge/corner handles to resize. Map browsing remains available outside its hit
+  region. Draw Area replaces the draft rectangle. Live area previews update
+  numeric fields without metadata writes; release commits once after identity/
+  frozen-area checks. Done hides the handles; clicking the box selects it again.
+  Escape, lost gestures or navigation discard
   an unfinished preview. Input errors do not move the
   camera or silently clamp numeric dimensions. Freehand polygons and rotation
   remain outside this milestone.
@@ -61,16 +64,20 @@ controls and direct map gestures now follow the new hierarchy.
   Freeze when the first acquisition is registered, not when it finishes. Pause,
   cancellation, transfer/preparation failure or deleting variants never unlocks
   an already frozen location. Validation failure before registration leaves a draft.
-- **No-coverage recovery** offers Adjust Area on the incomplete variant card and
-  below frozen editor dimensions. It opens/focuses an unlocked location copy with
-  that attempt's original area/detail. Width/Height/center can change before an
-  explicit new download. The failed journal stays intact and is never resumed
-  against changed geometry. No automatic deletion, unlock or paid retry.
-- **Add Variant** under a frozen location allows only Detail to change. All
-  variants use that location's identical requested footprint; each freezes its
+- **Incomplete-area recovery** offers Adjust Area on the incomplete variant card.
+  It edits that variant in place using its original area/detail. A cancellable
+  owner-held draft permits Width/Height/center changes; Retry Download commits a
+  fresh source attempt under the same variant ID. Previous archives stay recorded
+  and intact. Location/variant counts do not increase, sibling requests remain
+  unchanged and the location's displayed/default area follows the revised request.
+  Completed downloads reject adjustment. No automatic acquisition or deletion.
+- **Add Variant** under a frozen location allows only Detail to change. New
+  variants start from that location's currently committed footprint; each freezes its
   own detail/request at registration and owns its download/resume status,
   source files, prepared references, preview and exports. Existing variants are
-  immutable acquisitions. Another detail requires a new variant; changing export
+  immutable acquisitions. An adjusted incomplete variant retains its identity and
+  earlier attempts; completed siblings retain their prior footprints. Another
+  detail requires a new variant; changing export
   format/profile works offline from the same source when supported.
 - **Copy Location** creates a new ID and an unlocked draft using the original
   area's settings. The copy can move/resize until its own first download starts.
@@ -201,6 +208,11 @@ variant trash actions; those alerts are allowed.
 
 ### Preview
 
+- Shipped display choices: Textured (default), Solid without textures and
+  Wireframe without textures. Choosing a mode reloads the current preview with
+  that mode's admission estimate. Geometry modes omit image/sampler allocation
+  and show neutral surfaces or triangle edges; they retain full geometry and
+  do not alter source files, preparation profiles or export texture choices.
 - Present the downloaded region as one scene in the Metal view. Frame the
   bounds of the whole capture and preserve the shared origin and all placements.
   Internal prepared parts may remain independent meshes/materials.
@@ -217,6 +229,12 @@ variant trash actions; those alerts are allowed.
   selection. A single displayed part must never be presented as the full region.
 
 ### Export
+
+First step shipped: Preview can export the entire prepared capture as one GLB
+into a new project-owned output folder, with Include textures on by default and
+Show Export in Finder after success. Texture-free output omits images/bindings
+while retaining full geometry and material factors. It runs offline without a GPU
+preview. The dedicated file/folder Export screen below remains planned.
 
 - Export the entire current capture by default. Do not expose selected-model or
   subset management in the first version; SDK subset APIs remain available.

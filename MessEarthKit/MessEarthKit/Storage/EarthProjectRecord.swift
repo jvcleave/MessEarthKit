@@ -30,6 +30,10 @@ struct EarthProjectCapture: Codable, Equatable, Sendable
     let id: UUID
     let request: EarthDownloadRequest
     var reference: String { "sources/\(id.uuidString)" }
+    var area: EarthLocationArea
+    {
+        .init(center: request.center, widthMeters: String(request.widthMeters), heightMeters: String(request.depthMeters))
+    }
 }
 
 struct EarthProjectPreparation: Codable, Equatable, Sendable
@@ -61,7 +65,7 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
 
     init(id: UUID, date: Date)
     {
-        version = 3
+        version = 5
         self.id = id
         createdAt = date
         modifiedAt = date
@@ -78,13 +82,14 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
 
     func validate(id expectedID: UUID) throws
     {
-        guard version == 3 else { throw EarthProjectStoreError.unsupportedVersion }
+        guard version == 5 else { throw EarthProjectStoreError.unsupportedVersion }
         guard id == expectedID, createdAt.timeIntervalSince1970.isFinite,
               modifiedAt.timeIntervalSince1970.isFinite, modifiedAt >= createdAt,
               title.utf8.count <= 512, searchAddress.utf8.count <= 4096,
               Set(locations.map(\.id)).count == locations.count,
               locations.isEmpty ? editingLocationID == nil : editingLocation != nil,
               Set(captures.map(\.id)).count == captures.count,
+              Set(captures.flatMap(\.sourceCaptures).map(\.id)).count == captures.flatMap(\.sourceCaptures).count,
               captures.isEmpty ? selectedCaptureID == nil : selectedCapture != nil
         else { throw EarthProjectStoreError.invalidRecord }
         if let searchResult
@@ -112,7 +117,7 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
     {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         version = try values.decode(Int.self, forKey: .version)
-        guard version == 3 else { throw EarthProjectStoreError.unsupportedVersion }
+        guard version == 5 else { throw EarthProjectStoreError.unsupportedVersion }
         id = try values.decode(UUID.self, forKey: .id)
         createdAt = try values.decode(Date.self, forKey: .createdAt)
         modifiedAt = try values.decode(Date.self, forKey: .modifiedAt)
@@ -143,7 +148,7 @@ struct EarthProjectRecord: Codable, Equatable, Identifiable, Sendable
 
 enum EarthProjectStoreError: Error, Equatable, LocalizedError, Sendable
 {
-    case unsupportedVersion, invalidRecord, sourceMismatch, captureNotFound, locationNotFound, frozenLocation, changedLocation
+    case unsupportedVersion, invalidRecord, sourceMismatch, captureNotFound, locationNotFound, frozenLocation, changedLocation, capturedLocation, lockedVariantDetail
 
     var errorDescription: String?
     {
@@ -153,9 +158,11 @@ enum EarthProjectStoreError: Error, Equatable, LocalizedError, Sendable
             case .invalidRecord: "The project file is invalid or does not match its folder."
             case .sourceMismatch: "The project's saved capture or prepared models do not match their recorded source."
             case .locationNotFound: "This location is no longer available. Refresh the project and try again."
-            case .frozenLocation: "This location's capture area is frozen. Copy Location to adjust its area."
-            case .changedLocation: "The location or detail changed before the download started. Review it and retry."
+            case .frozenLocation: "This location's capture area is frozen. Use Adjust Area before any capture completes, or Copy Location."
+            case .changedLocation: "The location or its variants changed. Review the location and try again."
             case .captureNotFound: "This capture variant is no longer available in the project. Refresh the project and try again."
+            case .capturedLocation: "The capture area is fixed after a variant finishes downloading. Use Copy Location for a different area."
+            case .lockedVariantDetail: "Detail is fixed once a variant starts downloading. Add another variant to choose a different detail."
         }
     }
 }

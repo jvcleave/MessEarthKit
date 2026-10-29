@@ -17,6 +17,50 @@ enum EarthMapAreaDrag: Equatable, Sendable
     case move, resize(EarthMapAreaHandle), draw
 }
 
+/// Screen-space editing uses the same projected rectangle for handles and hits.
+/// Outside this region, pointer events remain available to the underlying map.
+struct EarthMapAreaScreenGeometry: Equatable
+{
+    let rect: CGRect
+    private static let handleRadius: CGFloat = 12
+
+    init?(corners: [CGPoint])
+    {
+        guard corners.count == 4, corners.allSatisfy({ $0.x.isFinite && $0.y.isFinite }),
+              let minX = corners.map(\.x).min(), let maxX = corners.map(\.x).max(),
+              let minY = corners.map(\.y).min(), let maxY = corners.map(\.y).max(),
+              maxX > minX, maxY > minY else { return nil }
+        rect = CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
+    }
+
+    func interactionRect(showsHandles: Bool) -> CGRect
+    {
+        showsHandles ? rect.insetBy(dx: -Self.handleRadius, dy: -Self.handleRadius) : rect
+    }
+
+    func point(for handle: EarthMapAreaHandle) -> CGPoint
+    {
+        CGPoint(
+            x: handle.west ? rect.minX : handle.east ? rect.maxX : rect.midX,
+            y: handle.north ? rect.minY : handle.south ? rect.maxY : rect.midY
+        )
+    }
+
+    func target(at pointer: CGPoint, showsHandles: Bool) -> EarthMapAreaDrag?
+    {
+        if showsHandles
+        {
+            let nearest = EarthMapAreaHandle.allCases.map
+            { handle in
+                let position = point(for: handle)
+                return (handle, hypot(position.x - pointer.x, position.y - pointer.y))
+            }.min { $0.1 < $1.1 }
+            if let nearest, nearest.1 <= Self.handleRadius { return .resize(nearest.0) }
+        }
+        return rect.contains(pointer) ? .move : nil
+    }
+}
+
 enum EarthMapAreaError: Error, LocalizedError
 {
     case displayRange, tooSmall, changed

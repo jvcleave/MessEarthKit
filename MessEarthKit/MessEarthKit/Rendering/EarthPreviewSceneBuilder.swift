@@ -8,12 +8,15 @@ import simd
 struct EarthPreviewSceneBuilder
 {
     let device: MTLDevice
-    private let whiteTexture: MTLTexture
-    var constantTextureBytes: Int { whiteTexture.allocatedSize }
+    let displayMode: EarthPreviewDisplayMode
+    private let whiteTexture: MTLTexture?
+    var constantTextureBytes: Int { whiteTexture?.allocatedSize ?? 0 }
 
-    init(device: MTLDevice) throws
+    init(device: MTLDevice, displayMode: EarthPreviewDisplayMode = .textured) throws
     {
         self.device = device
+        self.displayMode = displayMode
+        guard displayMode.usesTextures else { whiteTexture = nil; return }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 1, height: 1, mipmapped: false)
         descriptor.storageMode = .shared
         descriptor.usage = .shaderRead
@@ -38,6 +41,7 @@ struct EarthPreviewSceneBuilder
                 cost.geometryBytes = try EarthPreviewMemoryCost.sum(cost.geometryBytes, EarthPreviewMemoryCost.sum(max(length, size.size), size.align))
             }
         }
+        guard displayMode.usesTextures else { return cost }
         for material in capture.materials
         {
             try Task.checkCancellation()
@@ -54,37 +58,44 @@ struct EarthPreviewSceneBuilder
 
     func prepare(capture: EarthCapture) throws -> EarthPreparedPreview
     {
-        let loader = MTKTextureLoader(device: device)
         var textures: [Int: (MTLTexture, MTLSamplerState)] = [:]
         var allocatedBytes = 0
-        for (index, material) in capture.materials.enumerated()
+        if displayMode.usesTextures
         {
-            try Task.checkCancellation()
-            let sampler = MTLSamplerDescriptor()
-            let texture: MTLTexture
-            if let source = material.baseColorTexture
+            let loader = MTKTextureLoader(device: device)
+            for (index, material) in capture.materials.enumerated()
             {
-                texture = try loader.newTexture(data: source.encodedImage, options: [
-                    .SRGB: true, .origin: MTKTextureLoader.Origin.topLeft.rawValue,
-                    .generateMipmaps: source.mipmapFilter != .none,
-                    .textureStorageMode: MTLStorageMode.private.rawValue,
-                    .textureUsage: MTLTextureUsage.shaderRead.rawValue,
-                ])
-                allocatedBytes = try EarthPreviewMemoryCost.sum(allocatedBytes, texture.allocatedSize)
-                sampler.sAddressMode = addressMode(source.wrapS)
-                sampler.tAddressMode = addressMode(source.wrapT)
-                sampler.magFilter = source.usesNearestMagnification ? .nearest : .linear
-                sampler.minFilter = source.usesNearestMinification ? .nearest : .linear
-                switch source.mipmapFilter
+                try Task.checkCancellation()
+                let sampler = MTLSamplerDescriptor()
+                let texture: MTLTexture
+                if let source = material.baseColorTexture
                 {
-                    case .none: sampler.mipFilter = .notMipmapped
-                    case .nearest: sampler.mipFilter = .nearest
-                    case .linear: sampler.mipFilter = .linear
+                    texture = try loader.newTexture(data: source.encodedImage, options: [
+                        .SRGB: true, .origin: MTKTextureLoader.Origin.topLeft.rawValue,
+                        .generateMipmaps: source.mipmapFilter != .none,
+                        .textureStorageMode: MTLStorageMode.private.rawValue,
+                        .textureUsage: MTLTextureUsage.shaderRead.rawValue,
+                    ])
+                    allocatedBytes = try EarthPreviewMemoryCost.sum(allocatedBytes, texture.allocatedSize)
+                    sampler.sAddressMode = addressMode(source.wrapS)
+                    sampler.tAddressMode = addressMode(source.wrapT)
+                    sampler.magFilter = source.usesNearestMagnification ? .nearest : .linear
+                    sampler.minFilter = source.usesNearestMinification ? .nearest : .linear
+                    switch source.mipmapFilter
+                    {
+                        case .none: sampler.mipFilter = .notMipmapped
+                        case .nearest: sampler.mipFilter = .nearest
+                        case .linear: sampler.mipFilter = .linear
+                    }
                 }
+                else
+                {
+                    guard let whiteTexture else { throw EarthRegionPreviewError.allocation }
+                    texture = whiteTexture
+                }
+                guard let state = device.makeSamplerState(descriptor: sampler) else { throw EarthRegionPreviewError.allocation }
+                textures[index] = (texture, state)
             }
-            else { texture = whiteTexture }
-            guard let state = device.makeSamplerState(descriptor: sampler) else { throw EarthRegionPreviewError.allocation }
-            textures[index] = (texture, state)
         }
         var meshes: [EarthPreparedPreview.Mesh] = []
         for mesh in capture.meshes
@@ -94,7 +105,9 @@ struct EarthPreviewSceneBuilder
             { bytes in bytes.baseAddress.flatMap { device.makeBuffer(bytes: $0, length: bytes.count, options: .storageModeShared) } }
             let indices = mesh.triangleIndices.withUnsafeBytes
             { bytes in bytes.baseAddress.flatMap { device.makeBuffer(bytes: $0, length: bytes.count, options: .storageModeShared) } }
-            guard let vertices, let indices, let texture = textures[mesh.materialIndex], let first = mesh.vertices.first
+            let texture = textures[mesh.materialIndex]
+            guard let vertices, let indices, let first = mesh.vertices.first,
+                  capture.materials.indices.contains(mesh.materialIndex), !displayMode.usesTextures || texture != nil
             else { throw EarthRegionPreviewError.allocation }
             allocatedBytes = try EarthPreviewMemoryCost.sum(allocatedBytes, EarthPreviewMemoryCost.sum(vertices.allocatedSize, indices.allocatedSize))
             var minimum = first.position
@@ -109,12 +122,12 @@ struct EarthPreviewSceneBuilder
                 indices: indices,
                 indexCount: mesh.triangleIndices.count,
                 material: EarthPreviewMaterial(capture.materials[mesh.materialIndex]),
-                texture: texture.0,
-                sampler: texture.1,
+                texture: texture?.0,
+                sampler: texture?.1,
                 center: minimum + (maximum - minimum) / 2
             ))
         }
-        return EarthPreparedPreview(meshes: meshes, bounds: EarthPreviewBounds(capture.bounds), modelCount: 1, attributions: capture.attributions, allocatedBytes: allocatedBytes)
+        return EarthPreparedPreview(meshes: meshes, bounds: EarthPreviewBounds(capture.bounds), modelCount: 1, attributions: capture.attributions, allocatedBytes: allocatedBytes, displayMode: displayMode)
     }
 
     private func addressMode(_ mode: EarthTextureWrap) -> MTLSamplerAddressMode

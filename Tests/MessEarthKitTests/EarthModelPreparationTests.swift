@@ -295,14 +295,14 @@ func subdivisionFixture(scenario: GeometrySplitCase) throws -> Data
 
 /// A triangle retains ordered vertices, so swapped winding, duplicate/missing
 /// triangles, normals, UV transforms, colors or material changes alter the bag.
-func subdivisionTriangleSignatures(_ capture: EarthCapture) -> [String]
+func subdivisionTriangleSignatures(_ capture: EarthCapture, includingTextures: Bool = true) -> [String]
 {
     func values(_ floats: [Float]) -> String { floats.map { String(Int64((Double($0) * 10000).rounded())) }.joined(separator: ",") }
     var result: [String] = []
     for mesh in capture.meshes
     {
         let material = capture.materials[mesh.materialIndex]
-        let texture = material.baseColorTexture
+        let texture = includingTextures ? material.baseColorTexture : nil
         let materialKey = values([material.baseColor.x, material.baseColor.y, material.baseColor.z, material.baseColor.w, material.metallic, material.roughness, material.alphaCutoff]) + "\(material.alphaMode)\(material.isUnlit)\(material.isDoubleSided)\(texture.map { EarthSourceAccess.digest($0.encodedImage) } ?? "")\(texture?.wrapS as Any)\(texture?.wrapT as Any)\(texture?.mipmapFilter as Any)\(texture?.usesNearestMagnification as Any)\(texture?.usesNearestMinification as Any)"
         for index in stride(from: 0, to: mesh.triangleIndices.count, by: 3)
         {

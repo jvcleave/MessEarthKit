@@ -54,10 +54,7 @@ struct EarthProjectDetailView: View
                     .font(.caption).foregroundStyle(.secondary)
             }
             .disabled(project.isBusy)
-            if let location = project.editingLocation
-            {
-                EarthLocationEditorView(location: location, project: project, library: library)
-            }
+            EarthProjectCapturesView(project: project, library: library)
             if project.phase != .idle, project.operationCaptureID == nil
             {
                 ProgressView(project.progressText).controlSize(.small)
@@ -78,7 +75,6 @@ struct EarthProjectDetailView: View
                     Button("Retry Save", action: project.retrySave)
                 }
             }
-            EarthProjectCapturesView(project: project, library: library)
         }
         .formStyle(.grouped)
     }

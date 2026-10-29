@@ -13,7 +13,7 @@ struct EarthRegionPreviewResult: Sendable
 /// preview passes. A renderer result cannot adopt a replacement project capture.
 actor EarthRegionPreviewService
 {
-    typealias Build = @Sendable (EarthPreparedCollection, @escaping @Sendable (EarthRegionPreviewProgress) -> Void, @escaping @Sendable () async throws -> Void) async throws -> EarthRegionPreviewResult
+    typealias Build = @Sendable (EarthPreparedCollection, Int?, EarthPreviewMemoryLimit, EarthPreviewDisplayMode, @escaping @Sendable (EarthRegionPreviewProgress) -> Void, @escaping @Sendable () async throws -> Void) async throws -> EarthRegionPreviewResult
 
     private let projectID: UUID
     private let files: EarthAppFiles
@@ -28,7 +28,7 @@ actor EarthRegionPreviewService
         self.build = build
     }
 
-    func load(collection: EarthPreparedCollection, progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void) async throws -> EarthRegionPreviewResult
+    func load(collection: EarthPreparedCollection, modelID: Int? = nil, memoryLimit: EarthPreviewMemoryLimit = .automatic, displayMode: EarthPreviewDisplayMode = .wireframe, progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void) async throws -> EarthRegionPreviewResult
     {
         try Task.checkCancellation()
         let access = try await files.accessForReading(collection.directoryURL)
@@ -40,7 +40,7 @@ actor EarthRegionPreviewService
               recorded.profile == collection.profile, recorded.modelCount == collection.modelCount
         else { throw EarthRegionPreviewError.sourceChanged }
         try await files.validateArtifactDirectory(collection.directoryURL, projectID: projectID, kind: .prepared)
-        let result = try await build(collection, progress)
+        let result = try await build(collection, modelID, memoryLimit, displayMode, progress)
         { [self] in try await requireCurrent(capture: capture, preparation: preparation) }
         try Task.checkCancellation()
         try await requireCurrent(capture: capture, preparation: preparation)
@@ -55,11 +55,18 @@ actor EarthRegionPreviewService
         else { throw EarthRegionPreviewError.sourceChanged }
     }
 
-    private nonisolated static func buildScene(collection: EarthPreparedCollection, progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void, validateSource: @escaping @Sendable () async throws -> Void) async throws -> EarthRegionPreviewResult
+    private nonisolated static func buildScene(
+        collection: EarthPreparedCollection,
+        modelID: Int?,
+        memoryLimit: EarthPreviewMemoryLimit,
+        displayMode: EarthPreviewDisplayMode,
+        progress: @escaping @Sendable (EarthRegionPreviewProgress) -> Void,
+        validateSource: @escaping @Sendable () async throws -> Void
+    ) async throws -> EarthRegionPreviewResult
     {
         guard let device = MTLCreateSystemDefaultDevice()
         else { throw EarthImportError.unsupportedContent("A Metal device is unavailable.") }
-        let scene = try await EarthRegionPreviewLoader(device: device).load(collection: collection, progress: progress, validateSource: validateSource)
+        let scene = try await EarthRegionPreviewLoader(device: device).load(collection: collection, modelID: modelID, memoryLimit: memoryLimit, displayMode: displayMode, progress: progress, validateSource: validateSource)
         try Task.checkCancellation()
         return try EarthRegionPreviewResult(renderer: EarthPreviewRenderer(device: device), scene: scene, appearancePolicy: collection.profile.appearancePolicy)
     }

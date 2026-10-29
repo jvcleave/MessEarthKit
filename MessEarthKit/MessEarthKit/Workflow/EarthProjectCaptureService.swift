@@ -10,7 +10,7 @@ struct EarthConfirmedSelection: Sendable, Equatable
 
     init(location: EarthLocationRecord) throws
     {
-        guard let detail = location.variantDetail else { throw EarthProjectStoreError.changedLocation }
+        let detail = location.nextVariantDetail
         locationID = location.id
         area = location.area
         self.detail = detail
@@ -75,12 +75,13 @@ actor EarthProjectCaptureService
     {
         let record = try await store.record(id: id)
         guard let location = record.locations.first(where: { $0.id == selection.locationID }),
-              location.area == selection.area, location.variantDetail == selection.detail
+              location.area == selection.area, location.nextVariantDetail == selection.detail
         else { throw EarthProjectStoreError.changedLocation }
         let directory = try await files.newArtifactDirectory(projectID: id, kind: .sources)
         let archive = try await EarthSourceArchive.create(request: selection.request, directoryURL: directory)
         guard let captureID = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
-        _ = try await store.recordCapture(id: id, capture: .init(id: captureID, request: archive.request), selection: selection)
+        let capture = EarthProjectCapture(id: captureID, request: archive.request)
+        _ = try await store.recordCapture(id: id, capture: capture, selection: selection)
         return archive
     }
 
@@ -92,12 +93,24 @@ actor EarthProjectCaptureService
         return completed
     }
 
-    func revealCapture(_ captureID: UUID) async throws
+    func revealCapture(_ captureID: UUID, preparedModels: Bool = false) async throws
     {
         let record = try await store.record(id: id)
         guard let variant = record.captures.first(where: { $0.id == captureID }) else { throw EarthProjectStoreError.captureNotFound }
-        let url = try await files.resolve(reference: variant.capture.reference, projectID: id)
-        try await files.validateArtifactDirectory(url, projectID: id, kind: .sources)
+        let url: URL
+        if preparedModels
+        {
+            guard let preparation = variant.preparation else { throw EarthProjectStoreError.sourceMismatch }
+            url = try await files.resolve(reference: preparation.reference, projectID: id)
+            try await files.validateArtifactDirectory(url, projectID: id, kind: .prepared)
+            let collection = try await EarthPreparedCollection.open(directoryURL: url)
+            guard collection.profile == preparation.profile else { throw EarthProjectStoreError.sourceMismatch }
+        }
+        else
+        {
+            url = try await files.resolve(reference: variant.capture.reference, projectID: id)
+            try await files.validateArtifactDirectory(url, projectID: id, kind: .sources)
+        }
         await files.reveal(url)
     }
 
@@ -111,9 +124,10 @@ actor EarthProjectCaptureService
         try Task.checkCancellation()
         try await requireCurrent(archive)
         guard let preparationID = UUID(uuidString: result.directoryURL.lastPathComponent),
-              let captureID = UUID(uuidString: archive.directoryURL.lastPathComponent)
+              let captureID = UUID(uuidString: archive.directoryURL.lastPathComponent),
+              let variantID = current.record.selectedCaptureID
         else { throw EarthAppFilesError.invalidLocation }
-        _ = try await store.recordPreparation(id: id, preparation: .init(id: preparationID, captureID: captureID, profile: result.profile))
+        _ = try await store.recordPreparation(id: id, variantID: variantID, preparation: .init(id: preparationID, captureID: captureID, profile: result.profile))
         return result
     }
 

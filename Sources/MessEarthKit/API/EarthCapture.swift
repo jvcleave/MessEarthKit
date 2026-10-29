@@ -98,6 +98,11 @@ public struct EarthCapture: Sendable
     /// Recorded preparation permission, when the artifact includes it. An
     /// optimized-copy policy permits appearance changes on subdivided textures.
     public let preparationProfile: EarthPreparationProfile?
+    /// Zero-area source triangles omitted during flat-normal generation, including
+    /// recorded omissions in prepared derivatives. Placements count independently.
+    public let omittedDegenerateTriangleCount: Int
+    /// Authored identity recorded by an explicitly named standalone export.
+    public let identity: EarthCaptureIdentity?
 
     public var vertexCount: Int { meshes.reduce(0) { $0 + $1.vertices.count } }
     public var triangleCount: Int { meshes.reduce(0) { $0 + $1.triangleIndices.count / 3 } }

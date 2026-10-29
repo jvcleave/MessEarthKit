@@ -52,8 +52,8 @@ final class EarthPreparedPreview: @unchecked Sendable
         let indices: MTLBuffer
         let indexCount: Int
         let material: EarthPreviewMaterial
-        let texture: MTLTexture
-        let sampler: MTLSamplerState
+        let texture: MTLTexture?
+        let sampler: MTLSamplerState?
         let center: SIMD3<Float>
     }
 
@@ -62,20 +62,22 @@ final class EarthPreparedPreview: @unchecked Sendable
     let modelCount: Int
     let attributions: [String]
     let allocatedBytes: Int
+    let displayMode: EarthPreviewDisplayMode
 
-    init(meshes: [Mesh], bounds: EarthPreviewBounds, modelCount: Int, attributions: [String], allocatedBytes: Int)
+    init(meshes: [Mesh], bounds: EarthPreviewBounds, modelCount: Int, attributions: [String], allocatedBytes: Int, displayMode: EarthPreviewDisplayMode = .textured)
     {
         self.meshes = meshes
         self.bounds = bounds
         self.modelCount = modelCount
         self.attributions = attributions
         self.allocatedBytes = allocatedBytes
+        self.displayMode = displayMode
     }
 }
 
 enum EarthRegionPreviewError: Error, Equatable, LocalizedError, Sendable
 {
-    case incompleteCollection, sourceChanged, workingSet, allocation
+    case incompleteCollection, sourceChanged, workingSet, allocation, invalidMemoryBudget
     case deviceWorkingSet(allocatedBytes: Int, allowedBytes: Int)
 
     var errorDescription: String?
@@ -84,8 +86,9 @@ enum EarthRegionPreviewError: Error, Equatable, LocalizedError, Sendable
         {
             case .incompleteCollection: "The complete downloaded region has not been prepared. Downloaded files are retained."
             case .sourceChanged: "The preview does not match the project's current source or prepared files. Refresh the project before retrying the preview. Downloaded files are retained."
-            case .workingSet: "The entire region exceeds the supported preview memory budget. Downloaded and prepared files remain available for offline export."
+            case .workingSet: "The selected preview exceeds its memory budget. Increase Budget (GiB) or use Model Parts to preview one prepared model at a time. Downloaded and prepared files are retained."
             case .allocation: "Metal could not allocate the region's preview resources. Downloaded and prepared files are retained."
+            case .invalidMemoryBudget: "Enter a positive finite preview memory budget in GiB."
             case let .deviceWorkingSet(allocatedBytes, allowedBytes): "GPU allocations in this app reached \(ByteCountFormatter.string(fromByteCount: Int64(allocatedBytes), countStyle: .memory)); the preview allows \(ByteCountFormatter.string(fromByteCount: Int64(allowedBytes), countStyle: .memory)). Downloaded and prepared files are retained."
         }
     }

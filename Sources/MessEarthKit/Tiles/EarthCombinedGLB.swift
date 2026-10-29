@@ -45,6 +45,8 @@ struct EarthCombinedGLBMetadata: Codable
 final class EarthCombinedGLB
 {
     let profile: EarthPreparationProfile
+    private let options: EarthGLBExportOptions
+    private let identity: EarthCaptureIdentity?
     private(set) var binaryByteCount = 0
     private(set) var estimate: EarthCaptureGeometryEstimate
     private var meshes: [[String: Any]] = []
@@ -59,11 +61,14 @@ final class EarthCombinedGLB
     private var attributions = Set<String>()
     private var usesUnlit = false
     private var metadataBytes = 4096
+    private var omittedDegenerateTriangleCount = 0
 
     // Confined to one actor-owned export job; never returned or shared.
-    init(profile: EarthPreparationProfile) throws
+    init(profile: EarthPreparationProfile, options: EarthGLBExportOptions, identity: EarthCaptureIdentity?) throws
     {
         self.profile = profile
+        self.options = options
+        self.identity = identity
         estimate = try EarthCaptureGeometryEstimate()
     }
 
@@ -76,14 +81,19 @@ final class EarthCombinedGLB
         nodes.append([:])
         var children: [Int] = []
         var geometry = try EarthCaptureGeometryEstimate()
+        var attributeLayout = [(offset: 0, semantic: "POSITION", type: "VEC3")]
+        var offset = 12
+        if options.includeNormals { attributeLayout.append((offset, "NORMAL", "VEC3")); offset += 12 }
+        if options.includeTextureCoordinates { attributeLayout.append((offset, "TEXCOORD_0", "VEC2")); offset += 8 }
+        if options.includeVertexColors { attributeLayout.append((offset, "COLOR_0", "VEC4")) }
         for mesh in capture.meshes
         {
             try Task.checkCancellation()
             guard capture.materials.indices.contains(mesh.materialIndex), let first = mesh.vertices.first else { throw EarthGLBExportError.sourceChanged }
-            let vertexBytes = try EarthCaptureGeometryEstimate.product(mesh.vertices.count, 48)
+            let vertexBytes = try EarthCaptureGeometryEstimate.product(mesh.vertices.count, options.vertexByteStride)
             let indexBytes = try EarthCaptureGeometryEstimate.product(mesh.triangleIndices.count, 4)
             let vertexView = views.count
-            try record(["buffer": 0, "byteOffset": binaryByteCount, "byteLength": vertexBytes, "byteStride": 48, "target": 34962], in: &views)
+            try record(["buffer": 0, "byteOffset": binaryByteCount, "byteLength": vertexBytes, "byteStride": options.vertexByteStride, "target": 34962], in: &views)
             binaryByteCount = try EarthCaptureGeometryEstimate.sum(binaryByteCount, vertexBytes)
             let indexView = views.count
             try record(["buffer": 0, "byteOffset": binaryByteCount, "byteLength": indexBytes, "target": 34963], in: &views)
@@ -96,16 +106,20 @@ final class EarthCombinedGLB
                 minimum = simd_min(minimum, vertex.position)
                 maximum = simd_max(maximum, vertex.position)
             }
-            let accessor = accessors.count
-            for (offset, type) in [(0, "VEC3"), (12, "VEC3"), (24, "VEC2"), (32, "VEC4")]
+            var attributes: [String: Int] = [:]
+            for attribute in attributeLayout
             {
-                var value: [String: Any] = ["bufferView": vertexView, "byteOffset": offset, "componentType": 5126, "count": mesh.vertices.count, "type": type]
-                if offset == 0 { value["min"] = [minimum.x, minimum.y, minimum.z]; value["max"] = [maximum.x, maximum.y, maximum.z] }
+                var value: [String: Any] = ["bufferView": vertexView, "byteOffset": attribute.offset, "componentType": 5126, "count": mesh.vertices.count, "type": attribute.type]
+                if attribute.semantic == "POSITION" { value["min"] = [minimum.x, minimum.y, minimum.z]; value["max"] = [maximum.x, maximum.y, maximum.z] }
+                attributes[attribute.semantic] = accessors.count
                 try record(value, in: &accessors)
             }
+            let indexAccessor = accessors.count
             try record(["bufferView": indexView, "componentType": 5125, "count": mesh.triangleIndices.count, "type": "SCALAR"], in: &accessors)
             let meshIndex = meshes.count
-            try record(["name": mesh.name, "primitives": [["mode": 4, "attributes": ["POSITION": accessor, "NORMAL": accessor + 1, "TEXCOORD_0": accessor + 2, "COLOR_0": accessor + 3], "indices": accessor + 4, "material": materialOffset + mesh.materialIndex]]], in: &meshes)
+            var primitive: [String: Any] = ["mode": 4, "attributes": attributes, "indices": indexAccessor]
+            if options.includeMaterials { primitive["material"] = materialOffset + mesh.materialIndex }
+            try record(["name": mesh.name, "primitives": [primitive]], in: &meshes)
             children.append(nodes.count)
             try record(["mesh": meshIndex, "name": mesh.name], in: &nodes)
             geometry = try geometry.adding(EarthCaptureGeometryEstimate(vertices: mesh.vertices.count, indices: mesh.triangleIndices.count))
@@ -115,13 +129,13 @@ final class EarthCombinedGLB
         nodes[root] = modelNode
         var textureBytes = 0
         var largestTexture = 0
-        for material in capture.materials
+        for material in capture.materials where options.includeMaterials
         {
             var pbr: [String: Any] = ["baseColorFactor": [material.baseColor.x, material.baseColor.y, material.baseColor.z, material.baseColor.w], "metallicFactor": material.metallic, "roughnessFactor": material.roughness]
             var encoded: [String: Any] = ["name": material.name, "doubleSided": material.isDoubleSided, "alphaCutoff": material.alphaCutoff]
             switch material.alphaMode { case .opaque: encoded["alphaMode"] = "OPAQUE"; case .mask: encoded["alphaMode"] = "MASK"; case .blend: encoded["alphaMode"] = "BLEND" }
             if material.isUnlit { encoded["extensions"] = ["KHR_materials_unlit": [:]]; usesUnlit = true }
-            if let image = material.baseColorTexture
+            if options.includeTextures, let image = material.baseColorTexture
             {
                 let imageIndex = images.count
                 let view = views.count
@@ -141,6 +155,7 @@ final class EarthCombinedGLB
         estimate = try estimate.adding(geometry)
         guard profile.accepts(estimate) else { throw EarthGLBExportError.requirements(["Decoded models exceed the destination's combined geometry or texture budget."]) }
         for value in capture.attributions where attributions.insert(value).inserted { try consume(["copyright": value]) }
+        omittedDegenerateTriangleCount = try EarthCaptureGeometryEstimate.sum(omittedDegenerateTriangleCount, capture.omittedDegenerateTriangleCount)
     }
 
     func finish(collection: EarthPreparedCollection, modelIDs: [Int], coversEntireSource: Bool) throws -> Data
@@ -148,7 +163,8 @@ final class EarthCombinedGLB
         // Include the shared root in the destination's node budget.
         guard nodes.count < profile.maximumNodesPerPayload else { throw EarthGLBExportError.requirements(["The combined scene exceeds the destination's node budget."]) }
         let sharedRoot = nodes.count
-        try record(["name": "Earth Models", "children": roots], in: &nodes)
+        let name = identity?.locationName ?? "Earth Models"
+        try record(["name": name, "children": roots], in: &nodes)
         let metadata = EarthCombinedGLBMetadata(
             formatVersion: 1,
             sourceIdentifier: collection.sourceIdentifier,
@@ -163,13 +179,30 @@ final class EarthCombinedGLB
         )
         var json: [String: Any] = [
             "asset": ["version": "2.0", "generator": "MessEarthKit combined export", "copyright": attributions.sorted().joined(separator: "; ")],
-            "scene": 0, "scenes": [["nodes": [sharedRoot]]], "nodes": nodes,
-            "meshes": meshes, "materials": materials, "accessors": accessors,
+            "scene": 0, "scenes": [["name": name, "nodes": [sharedRoot]]], "nodes": nodes,
+            "meshes": meshes, "accessors": accessors,
             "buffers": [["byteLength": binaryByteCount]], "bufferViews": views,
-            "extras": ["messEarthKitCombinedAsset": try JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata))],
+            "extras": [
+                "messEarthKitCombinedAsset": try JSONSerialization.jsonObject(with: JSONEncoder().encode(metadata)),
+                "messEarthKitTextureMode": options.includeTextures ? "included" : "omitted",
+                "messEarthKitExportOptions": try JSONSerialization.jsonObject(with: JSONEncoder().encode(options)),
+            ],
         ]
+        if !materials.isEmpty { json["materials"] = materials }
         if !images.isEmpty { json["images"] = images; json["textures"] = textures; json["samplers"] = samplers }
         if usesUnlit { json["extensionsUsed"] = ["KHR_materials_unlit"] }
+        if let identity
+        {
+            var extras = json["extras"] as! [String: Any]
+            extras["messEarthKitCaptureIdentity"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(identity))
+            json["extras"] = extras
+        }
+        if omittedDegenerateTriangleCount > 0
+        {
+            var extras = json["extras"] as! [String: Any]
+            extras["messEarthKitOmittedDegenerateTriangleCount"] = omittedDegenerateTriangleCount
+            json["extras"] = extras
+        }
         var data = try JSONSerialization.data(withJSONObject: json, options: [.sortedKeys, .withoutEscapingSlashes])
         while !data.count.isMultiple(of: 4) { data.append(32) }
         guard data.count <= 16 * 1024 * 1024 else { throw EarthGLBExportError.requirements(["Combined scene metadata exceeds the importer's 16 MiB JSON working set."]) }
@@ -213,7 +246,7 @@ final class EarthCombinedGLB
         try output.write(contentsOf: data)
     }
 
-    static func writeBinary(_ capture: EarthCapture, to output: FileHandle) throws
+    static func writeBinary(_ capture: EarthCapture, options: EarthGLBExportOptions, to output: FileHandle) throws
     {
         var data = Data(capacity: 65584)
         func flush() throws
@@ -231,7 +264,13 @@ final class EarthCombinedGLB
         {
             for vertex in mesh.vertices
             {
-                for value in [vertex.position.x, vertex.position.y, vertex.position.z, vertex.normal.x, vertex.normal.y, vertex.normal.z, vertex.textureCoordinate.x, vertex.textureCoordinate.y, vertex.color.x, vertex.color.y, vertex.color.z, vertex.color.w] { word(value.bitPattern) }
+                word(vertex.position.x.bitPattern); word(vertex.position.y.bitPattern); word(vertex.position.z.bitPattern)
+                if options.includeNormals
+                { word(vertex.normal.x.bitPattern); word(vertex.normal.y.bitPattern); word(vertex.normal.z.bitPattern) }
+                if options.includeTextureCoordinates
+                { word(vertex.textureCoordinate.x.bitPattern); word(vertex.textureCoordinate.y.bitPattern) }
+                if options.includeVertexColors
+                { word(vertex.color.x.bitPattern); word(vertex.color.y.bitPattern); word(vertex.color.z.bitPattern); word(vertex.color.w.bitPattern) }
                 if data.count >= 65536 { try flush() }
             }
             for index in mesh.triangleIndices
@@ -241,6 +280,7 @@ final class EarthCombinedGLB
             }
             try flush()
         }
+        guard options.includeTextures else { return }
         for material in capture.materials
         {
             guard let image = material.baseColorTexture else { continue }

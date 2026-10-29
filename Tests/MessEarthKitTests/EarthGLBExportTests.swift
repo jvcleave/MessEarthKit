@@ -45,6 +45,168 @@ func combinedGLBPreservesSelectedModels(scenario: GeometrySplitCase) async throw
 
 private enum CombinedBudget: CaseIterable, Sendable { case vertices, indices, textures, nodes, fileBytes }
 
+@Test func captureIdentityRejectsAnUnsupportedDeclaredVersion() throws
+{
+    let identity = try EarthCaptureIdentity(locationName: "Named capture", request: EarthDownloadRequest(center: EarthGeographicOrigin(latitude: 41, longitude: -87)), detailName: "high")
+    var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(identity)) as? [String: Any])
+    json["formatVersion"] = 999
+    let invalid = try JSONSerialization.data(withJSONObject: json)
+    #expect(throws: EarthImportError.self) { try JSONDecoder().decode(EarthCaptureIdentity.self, from: invalid) }
+    #expect(throws: EarthImportError.self) { try EarthCaptureIdentity.readMetadata(json: ["extras": ["messEarthKitCaptureIdentity": json]]) }
+}
+
+// Omission accounting must not multiply with subdivision, and must survive
+// repeated placements and standalone delivery without changing raw payloads.
+@Test func combinedGLBRetainsDegenerateTriangleOmissionsThroughPreparation() async throws
+{
+    let source = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0), SIMD3(2, 0, 0)], indices: [0, 0, 1, 0, 1, 3, 0, 1, 2, 1, 3, 2])
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 2, sourceOverride: source)
+    let rawPayload = try #require(FileManager.default.contentsOfDirectory(at: raw.directoryURL.appendingPathComponent("tiles"), includingPropertiesForKeys: nil).first)
+    let profile = try EarthPreparationProfile(maximumVerticesPerModel: 3, maximumIndicesPerModel: 3, maximumPlacementsPerModel: 1)
+    let catalog = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    #expect(catalog.modelCount == 4)
+    var omissions = 0
+    for model in try await catalog.models()
+    {
+        let capture = try await catalog.importModel(id: model.id)
+        omissions += capture.omittedDegenerateTriangleCount
+    }
+    #expect(omissions == 4)
+    let exporter = EarthGLBExporter()
+    let destination = try EarthPreparationProfile()
+    let plan = try await exporter.preflight(collection: catalog, destination: destination)
+    let target = parent.appendingPathComponent("recovered.glb")
+    try await exporter.export(plan: plan, fileURL: target)
+    let restored = try await EarthCaptureImporter().importFile(fileURL: target)
+    #expect(restored.triangleCount == 4 && restored.omittedDegenerateTriangleCount == 4)
+    #expect(try Data(contentsOf: rawPayload) == source)
+}
+
+// Distinct risks: geometry-only admission must ignore source texture costs,
+// omit image bytes/references, and retain placement, attributes and material factors.
+@Test func combinedGLBWithoutTexturesRetainsGeometryAndSourceImages() async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 2)
+    let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
+    let catalog = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    let first = try await catalog.importModel(id: 1)
+    let last = try await catalog.importModel(id: 2)
+    let image = try #require(first.materials.compactMap(\.baseColorTexture).first)
+    let originalManifest = try Data(contentsOf: #require(catalog.rootSourceURL))
+    let destination = try EarthPreparationProfile(maximumDecodedTextureBytesPerModel: 1, maximumTextureDimension: 1)
+    let exporter = EarthGLBExporter()
+    let textured = try await exporter.preflight(collection: catalog, destination: destination)
+    #expect(textured.includesTextures && !textured.canExport)
+    await #expect(throws: EarthGLBExportError.invalidOptions)
+    { try await exporter.preflight(collection: catalog, destination: destination, options: .init(includeTextureCoordinates: false)) }
+    await #expect(throws: EarthGLBExportError.invalidOptions)
+    { try await exporter.preflight(collection: catalog, destination: destination, options: .init(includeMaterials: false)) }
+    let plan = try await exporter.preflight(collection: catalog, destination: destination, options: .untextured)
+    #expect(plan.canExport && !plan.includesTextures && plan.coversEntireSource)
+    #expect(plan.estimate.decodedTextureBytes == 0 && plan.estimate.largestTextureDimension == 0)
+    let target = try await exporter.export(plan: plan, fileURL: parent.appendingPathComponent("geometry.glb"))
+    let bytes = try Data(contentsOf: target)
+    let json = try EarthGLBDecoder(limits: destination.importLimits).preflight(data: bytes)
+    #expect(json["images"] == nil && json["textures"] == nil && json["samplers"] == nil)
+    #expect(bytes.range(of: image.encodedImage) == nil)
+    let capture = try await EarthCaptureImporter(limits: destination.importLimits).importFile(fileURL: target)
+    let expected = subdivisionTriangleSignatures(first, includingTextures: false) + subdivisionTriangleSignatures(last, includingTextures: false)
+    #expect(subdivisionTriangleSignatures(capture) == expected.sorted())
+    #expect(capture.materials.allSatisfy { $0.baseColorTexture == nil })
+    #expect(capture.geographicOrigin == raw.request.center && capture.attributions == first.attributions)
+    #expect(try Data(contentsOf: #require(catalog.rootSourceURL)) == originalManifest)
+    let reopened = try await catalog.importModel(id: 1)
+    #expect(reopened.materials.compactMap(\.baseColorTexture).first?.encodedImage == image.encodedImage)
+}
+
+private enum OptionalGLBData: CaseIterable, Sendable
+{
+    case normals, colors, coordinates, materials, minimal
+
+    var options: EarthGLBExportOptions
+    {
+        switch self
+        {
+            case .normals: .init(includeNormals: false)
+            case .colors: .init(includeVertexColors: false)
+            case .coordinates: .init(includeTextureCoordinates: false, includeTextures: false)
+            case .materials: .init(includeMaterials: false, includeTextures: false)
+            case .minimal: .minimal
+        }
+    }
+
+    // Independent glTF float-layout expectations, including required positions.
+    var stride: Int
+    {
+        switch self
+        {
+            case .normals: 36
+            case .colors: 32
+            case .coordinates: 40
+            case .materials: 48
+            case .minimal: 12
+        }
+    }
+}
+
+// Optional attributes must change the actual binary stride, not just the JSON.
+// The native decoder independently checks values, indexing and placement against
+// the established authored fixture, including when it regenerates absent normals.
+@Test(arguments: OptionalGLBData.allCases)
+private func combinedGLBOmitsSelectedDataWithoutChangingRetainedValues(scenario: OptionalGLBData) async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 2)
+    let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
+    let catalog = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    let first = try await catalog.importModel(id: 1)
+    let last = try await catalog.importModel(id: 2)
+    let expected = first.meshes + last.meshes
+    let options = scenario.options
+    let exporter = EarthGLBExporter()
+    let plan = try await exporter.preflight(collection: catalog, destination: .init(), options: options)
+    let target = try await exporter.export(plan: plan, fileURL: parent.appendingPathComponent("optional.glb"))
+    let bytes = try Data(contentsOf: target)
+    #expect(bytes.count == plan.outputByteCount)
+    let json = try EarthGLBDecoder(limits: .init()).preflight(data: bytes)
+    let views = try #require(json["bufferViews"] as? [[String: Any]])
+    #expect(views.compactMap { $0["byteStride"] as? Int } == Array(repeating: scenario.stride, count: expected.count))
+    let meshes = try #require(json["meshes"] as? [[String: Any]])
+    for mesh in meshes
+    {
+        let primitive = try #require((mesh["primitives"] as? [[String: Any]])?.first)
+        let attributes = try #require(primitive["attributes"] as? [String: Int])
+        #expect((attributes["NORMAL"] != nil) == options.includeNormals)
+        #expect((attributes["TEXCOORD_0"] != nil) == options.includeTextureCoordinates)
+        #expect((attributes["COLOR_0"] != nil) == options.includeVertexColors)
+        #expect((primitive["material"] != nil) == options.includeMaterials)
+    }
+    if !options.includeMaterials { #expect(json["materials"] == nil && json["extensionsUsed"] == nil) }
+    let extras = try #require(json["extras"] as? [String: Any])
+    let recorded = try JSONSerialization.data(withJSONObject: #require(extras["messEarthKitExportOptions"]))
+    #expect(try JSONDecoder().decode(EarthGLBExportOptions.self, from: recorded) == options)
+    let restored = try await EarthCaptureImporter().importFile(fileURL: target)
+    try #require(restored.meshes.count == expected.count)
+    for (actual, source) in zip(restored.meshes, expected)
+    {
+        let actualVertices = actual.triangleIndices.map { actual.vertices[Int($0)] }
+        let sourceVertices = source.triangleIndices.map { source.vertices[Int($0)] }
+        #expect(actualVertices.map(\.position) == sourceVertices.map(\.position))
+        if options.includeNormals
+        { #expect(zip(actualVertices, sourceVertices).allSatisfy { simd_distance($0.normal, $1.normal) < 0.00001 }) }
+        if options.includeTextureCoordinates
+        { #expect(actualVertices.map(\.textureCoordinate) == sourceVertices.map(\.textureCoordinate)) }
+        if options.includeVertexColors
+        { #expect(actualVertices.map(\.color) == sourceVertices.map(\.color)) }
+    }
+    #expect(restored.geographicOrigin == raw.request.center && restored.attributions == first.attributions)
+}
+
 @Test(arguments: CombinedBudget.allCases)
 private func combinedGLBPreflightRejectsDestinationExcessBeforeOutput(budget: CombinedBudget) async throws
 {

@@ -9,29 +9,42 @@ struct EarthLocationEditorView: View
 
     var body: some View
     {
-        Section("Location")
+        Group
         {
             TextField("Name", text: Binding(get: { project.editingLocation?.title ?? "" }, set: project.setLocationTitle))
+                .disabled(project.areaAdjustment != nil)
             Group
             {
                 TextField("Width (m)", text: Binding(get: { project.displayedLocationArea?.widthMeters ?? "" }, set: project.setWidth))
                 TextField("Height (m)", text: Binding(get: { project.displayedLocationArea?.heightMeters ?? "" }, set: project.setHeight))
-                Button("Move to Map Center") { if let center = project.mapCenter { project.setLocationCenter(center) } }
-                    .disabled(project.mapCenter == nil)
             }.disabled(location.isFrozen)
+            if project.areaAdjustment != nil
+            {
+                HStack
+                {
+                    Button("Apply Area", action: project.applyAreaAdjustment).disabled(!project.canApplyAreaAdjustment)
+                    Button("Cancel Adjustment", action: project.cancelAreaAdjustment)
+                }
+            }
+            else if location.isFrozen
+            {
+                Button("Adjust Area") { project.adjustLocationArea(location.id) }
+                    .disabled(!project.canAdjustArea(location.id))
+            }
             if location.isFrozen
             {
-                Text("Capture area frozen. Adjust Area opens an editable copy to move or resize.").font(.caption).foregroundStyle(.secondary)
-                Button("Adjust Area") { project.copyLocation(location.id) }
+                Text("Use Adjust Area before a variant finishes downloading. Use Copy Location for another area afterward.").font(.caption).foregroundStyle(.secondary)
             }
-            if let detail = location.variantDetail
+            if project.areaAdjustment != nil
             {
-                Picker("Variant detail", selection: Binding(get: { project.editingLocation?.variantDetail ?? detail }, set: project.setDetail))
-                { ForEach(EarthProjectDetail.allCases) { Text($0.title).tag($0) } }
-                Button("Download Tiles") { library.download(project.id) }
-                    .disabled(!project.canDownload || !project.hasAPIKey || !library.canStartWork)
+                Text("Move or resize the capture box, then Apply Area to update all pending variants. Earlier download files are retained.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            else { Button("Add Variant") { project.addVariant(location.id) } }
+            else
+            {
+                Button("Add Variant") { project.addVariant(location.id) }
+                    .disabled(!project.canAddVariant || !library.canStartWork)
+            }
         }
         .disabled(project.isBusy || !library.canStartWork)
     }

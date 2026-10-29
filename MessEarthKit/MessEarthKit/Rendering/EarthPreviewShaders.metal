@@ -52,3 +52,17 @@ fragment float4 earthPreviewFragment(
     }
     return color;
 }
+
+// Geometry inspection deliberately ignores source images, vertex colors and
+// material alpha so texture-free shapes remain visible under neutral lighting.
+fragment float4 earthPreviewGeometryFragment(
+    RasterVertex input [[stage_in]],
+    bool frontFacing [[front_facing]],
+    constant SurfaceUniforms &surface [[buffer(0)]]
+)
+{
+    if (surface.options.w > 0.5) { return float4(0.82, 0.91, 1.0, 1.0); }
+    float3 normal = normalize(input.normal) * (frontFacing ? 1.0 : -1.0);
+    float diffuse = max(0.0, dot(normal, normalize(float3(0.4, 0.8, 0.6))));
+    return float4(surface.baseColor.rgb * (0.3 + 0.7 * diffuse), 1.0);
+}

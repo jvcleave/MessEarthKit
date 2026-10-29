@@ -1,7 +1,7 @@
 # MessEarth app storage and file-access policy
 
-Status: app files, schema-3 project/schema-1 settings stores and the MapKit-confirmed
-download/preparation flow and whole-region preview are implemented. Location/model controls and direct map editing are implemented; Export UI remains.
+Status: app files, schema-5 project/schema-1 settings stores and the MapKit-confirmed
+download/preparation flow and whole-region preview are implemented. Location/model controls and direct map editing are implemented. Variant cards export whole-capture GLBs with optional textures and persistent schema-1 export history.
 Updated: 2026-10-29 (America/New_York).
 Scope: MessEarthKitExample app-owned storage and authorization.
 
@@ -46,8 +46,9 @@ Documents/MessEarthKit/
   projects/
     <project UUID>/
       project.json
+      exports.json               # schema 1; created with the first tracked export
       sources/
-        <capture UUID>/          # SDK source archive, including its journal
+        <source attempt UUID>/   # SDK source archive, including its journal
       prepared/
         <preparation UUID>/      # SDK prepared catalog and model parts
       output/
@@ -84,7 +85,7 @@ deletion detaches every nested variant in one operation and uses one Trash bundl
 Variant deletion updates internal selection without replacing its area or title. The
 last variant deletion clears active capture selection when none remain, but the
 location stays frozen. Deleting a location preserves other areas and map search.
-Only the removed variants' UUID sources and
+Only the removed variants' current and previous UUID source attempts and
 recorded preparations are removed; a preparation still referenced by another
 variant is retained. EarthAppFiles validates managed paths and rejects symlinks,
 commits metadata first, stages those directories in a unique Deleted-Captures
@@ -126,6 +127,43 @@ jobs reopen that recorded journal without inferred paths; preparation later comm
 its selected collection reference. UI navigation never owns these job/file lifetimes.
 
 ## Confinement and authorization
+
+The project-retained GLB export owner captures the clicked variant ID and its
+Include textures choice once per job. Variant cards own these controls and the
+history; Preview contains only viewing controls. Export prepares missing or
+incomplete models offline, records preparation on that exact variant, and never
+changes the selected preview or editing location. It freezes that location's chosen name and the variant's exact
+request/detail into portable `EarthCaptureIdentity`. The filename uses a bounded
+sanitized name and detail, while the GLB scene/root retain the original name.
+Embedded identity retains full-precision geography independently of rounded
+coordinate labels; declared invalid identity metadata is rejected on import.
+Its service holds read authorization while preflighting and writing, revalidates
+the targeted capture/preparation, and requests a new managed output UUID folder
+through EarthAppFiles. The SDK atomically publishes the GLB there. Failed or
+cancelled publication removes only that attempt's empty output folder; completed
+outputs and source/prepared files remain. Show Export in Finder is a semantic
+action through the same files owner. No native save panel is introduced.
+
+Successful publication appends an immutable record to strict schema-1
+`exports.json`: project/variant and output IDs, source request/ID, preparation
+profile/ID, chosen location name/detail, texture choice, managed filename and
+completion time. This independent metadata leaves project schema 5 unchanged.
+The absent file is the initial state before the first tracked export; malformed,
+unsupported or mismatched existing metadata is an explicit error and is never
+replaced with empty history. Mutations serialize and replace metadata atomically.
+No scan or legacy association of earlier untracked outputs is performed.
+
+The card restores its history on project opening/refresh and checks exact managed
+output references. Missing output files stay recorded as unavailable; Reveal
+revalidates their existence and confinement. History stores relative references
+and provenance, not authorization or GPU objects. A completed GLB whose subsequent
+history write fails is retained and reported explicitly with a Finder action;
+it is not claimed as a successfully recorded export. Cancellation before GLB
+publication adds no history and cannot remove earlier outputs. Publication wins
+a simultaneous cancellation and still records the completed file. Variant or
+location deletion retains outputs/history; project deletion trashes the entire
+project folder including both. Historical provenance does not require deleted
+source/preparation folders to remain available.
 
 - Resolve managed paths below the configured root using checked components;
   reject traversal, escaping references, symlinks that leave the permitted tree,
@@ -169,22 +207,57 @@ authorization call sites through it; add no old-root bridge or fallback to the
 former workspace UI.
 
 The implemented owner is `Storage/EarthAppFiles.swift` in the example app. The
-project library supplies persistent IDs from schema-3 `project.json` records.
+project library supplies persistent IDs from schema-5 `project.json` records.
 There is no newest-archive startup scan.
 The old app inspection/recovery/calibration route has been removed. SDK/public
 capture, preparation and export contracts are unchanged.
 
 `EarthProjectStore` owns the independent project title/map-search state, locations,
 nested detail variants, editing location ID and active capture ID. Each location
-has its own center/Width/Height, a required nullable frozenAt and a required nullable
-pending variant detail. The first source registration freezes area and records
-variant identity atomically before transport. Freeze survives pause/failure and
+has one typed `EarthLocationName` (automatic city or custom title), its own
+center/Width/Height, a required nullable frozenAt and a required nullable
+pending variant detail. Add Variant saves an offline paused source journal and
+atomically freezes the first area and records variant identity. No API key or
+transport is required. A cleared pending detail defaults the next selection to
+the latest variant's detail. The location editor has no detail picker; each saved
+variant card owns Detail and Download. Copy Location is a location-level action
+next to Show on Map. Before any source
+attempt starts, a detail change creates a fresh empty journal under the same
+variant ID and retains earlier empty sources. Metadata selection, location area
+and siblings stay unchanged. Current detail must match the current source
+request; older source attempts retain their own recognized detail values.
+Journal-only status checks every earlier attempt before allowing detail changes,
+so an empty area retry cannot unlock a variant whose acquisition already began.
+Download and Resume explicitly activate that variant's saved source rather than
+registering a new one or using the editing location's request. Zero-request
+archives show Not downloaded, and API keys are required only for transfer.
+Freeze survives pause/failure and
 last-variant deletion. Copies get fresh IDs with no frozen state or artifacts.
-Search, editor and workflow selection serialize independently. A frozen area's
-geometry is immutable; validation requires all nested variants to reference that
-location ID and identical geometry. A source activation for Preview/Resume validates
+Search, editor and workflow selection serialize independently. Normal editor
+writes cannot alter a frozen area. Adjust Area sits under Height and opens one
+location-owned cancellable area draft. Applying stays offline: the store checks
+every current and retained historical source, creates one fresh journal per
+pending detail variant, then atomically records the area and all replacement
+references in one metadata save. Completion and the exact area/variant snapshot
+are rechecked after source creation and before publication. Any completed source
+or prepared variant blocks adjustment; Copy Location captures a different box.
+Variant and location IDs, details, creation dates, editor/active selection and
+other locations stay unchanged. Required `previousCaptures` retains every old
+source; downloaded files and journals are never rewritten or moved. Download
+remains an independent per-variant action after Apply Area. Current variant
+requests must all match the location's shared box; historical requests retain
+their original boxes. Deletion never chooses a variant's box for the location.
+The former variant-specific adjustment path is removed, without a compatibility
+reader, migration, alias or fallback. A source activation for Preview/Resume validates
 it first while preserving search, editing location and pending variant settings.
 Show on Map changes editor focus explicitly, without rewriting any area.
+Add Location resolves city names at the actual map centre through an injected
+MapKit lookup and saves an automatic name. Automatic coordinate labels use five
+decimal places with a stable decimal separator; source coordinates stay Double.
+Moved automatic centres resolve before persistence; typed custom names survive
+all subsequent moves. Exact save publication and store name checks prevent a
+late city lookup from overwriting a newer manual name. The schema-5 reader
+requires this naming owner and does not infer it from an old title string.
 `EarthMapAreaEditing` owns transient gesture snapshots with location ID, original
 area and live preview. It performs no I/O. Gesture release checks identity, original
 area and frozen state before the project owner queues one normal atomic editor

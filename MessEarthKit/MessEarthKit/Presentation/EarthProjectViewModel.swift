@@ -11,13 +11,21 @@ final class EarthProjectViewModel: Identifiable
     let id: UUID
     let downloads: EarthSourceDownloadViewModel
     let preview: EarthRegionPreviewViewModel
+    let export: EarthProjectExportViewModel
     private(set) var searchAddress: String
     private(set) var searchResult: EarthMapSearchResult?
     private(set) var locations: [EarthLocationRecord]
     private(set) var editingLocationID: UUID?
     private(set) var mapFocus: EarthProjectMapFocus?
     var mapCenter: EarthGeographicOrigin?
-    var editingLocation: EarthLocationRecord? { locations.first { $0.id == editingLocationID } }
+    private(set) var areaAdjustment: EarthLocationAreaAdjustment?
+    var editingLocation: EarthLocationRecord?
+    {
+        guard let original = locations.first(where: { $0.id == editingLocationID }) else { return nil }
+        if let areaAdjustment, areaAdjustment.locationID == original.id { return areaAdjustment.editingLocation(original) }
+        return original
+    }
+
     private(set) var mapEdit = EarthMapAreaEditing()
     var displayedLocationArea: EarthLocationArea?
     {
@@ -92,9 +100,16 @@ final class EarthProjectViewModel: Identifiable
         downloads = EarthSourceDownloadViewModel(observer: settings.usage.requestObserver, appFiles: appFiles, projectID: opened.record.id)
         downloads.restore(opened.archive)
         preview = EarthRegionPreviewViewModel(service: EarthRegionPreviewService(projectID: opened.record.id, files: appFiles, store: store))
+        export = EarthProjectExportViewModel(service: EarthProjectExportService(
+            projectID: opened.record.id,
+            files: appFiles,
+            store: store,
+            prepare: { archive, profile, progress in try await models.prepare(archive: archive, profile: profile, progress: progress) }
+        ))
         refreshMapSelection()
         updateCaptureStatus()
         if let center = mapCenter { mapFocus = .init(center: center) }
+        export.reloadHistory()
     }
 
     var status: String
@@ -102,6 +117,7 @@ final class EarthProjectViewModel: Identifiable
         if persistenceError != nil { return "Changes not saved" }
         if phase != .idle { return phase.title }
         if jobError != nil { return jobFailureStatus }
+        if export.isLoading { return "Exporting GLB" }
         if preview.isLoading { return "Loading preview" }
         if preview.errorMessage != nil { return "Preview unavailable" }
         return savedStatus
@@ -127,8 +143,15 @@ final class EarthProjectViewModel: Identifiable
     private func editLocation(_ change: (inout EarthLocationEdit) -> Void)
     {
         guard !isBusy, let index = locations.firstIndex(where: { $0.id == editingLocationID }) else { return }
-        var edit = locations[index].edit
+        var edit = editingLocation?.edit ?? locations[index].edit
         change(&edit)
+        if var adjustment = areaAdjustment, adjustment.locationID == editingLocationID
+        {
+            adjustment.area = edit.area
+            areaAdjustment = adjustment
+            refreshMapSelection()
+            return
+        }
         do { try locations[index].apply(edit) }
         catch { mapInputError = error.localizedDescription; return }
         pendingLocations[locations[index].id] = edit
@@ -137,10 +160,8 @@ final class EarthProjectViewModel: Identifiable
     }
 
     func setLocationTitle(_ value: String) { editLocation { $0.title = value } }
-    func setDetail(_ value: EarthProjectDetail) { editLocation { $0.variantDetail = value } }
     func setWidth(_ value: String) { editLocation { $0.area.widthMeters = value } }
     func setHeight(_ value: String) { editLocation { $0.area.heightMeters = value } }
-    func setLocationCenter(_ value: EarthGeographicOrigin) { editLocation { $0.area.center = value } }
 
     func beginMapAreaEdit(kind: EarthMapAreaDrag, start: EarthGeographicOrigin)
     {
@@ -166,36 +187,114 @@ final class EarthProjectViewModel: Identifiable
 
     func cancelMapAreaEdit() { mapEdit.cancel() }
 
-    var isBusy: Bool { phase != .idle || preview.isLoading || mapEdit.isEditing }
-    var canDownload: Bool { confirmation != nil && !isBusy }
+    var isBusy: Bool { phase != .idle || preview.isLoading || export.isLoading || mapEdit.isEditing }
+    var canAddVariant: Bool { confirmation != nil && areaAdjustment == nil && !isBusy }
+    var canApplyAreaAdjustment: Bool { confirmation != nil && areaAdjustment != nil && !isBusy }
     var hasAPIKey: Bool { !settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var selectedCapture: EarthProjectCaptureVariant? { captures.first { $0.id == selectedCaptureID } }
 
     func addLocation()
     {
         guard let center = mapCenter else { return }
-        let name = "Location \(locations.count + 1)"
-        changeLocation { [store, id] in try await store.addLocation(id: id, center: center, title: name) }
+        changeLocation { [store, id] in try await store.addLocation(id: id, center: center) }
     }
 
-    func copyLocation(_ locationID: UUID)
-    { changeLocation { [store, id] in try await store.copyLocation(id: id, locationID: locationID) } }
+    func copyLocation(_ locationID: UUID, captureID: UUID? = nil)
+    { changeLocation { [store, id] in try await store.copyLocation(id: id, locationID: locationID, captureID: captureID) } }
 
-    func adjustCaptureArea(_ captureID: UUID)
+    func canAdjustArea(_ locationID: UUID) -> Bool
     {
-        guard let variant = captures.first(where: { $0.id == captureID }) else { return }
-        changeLocation { [store, id] in try await store.copyLocation(id: id, locationID: variant.locationID, captureID: captureID) }
+        guard !isBusy, areaAdjustment == nil,
+              let location = locations.first(where: { $0.id == locationID }), !location.variants.isEmpty else { return false }
+        return location.variants.allSatisfy { captureStatuses[$0.id]?.canChangeArea == true }
+    }
+
+    func adjustLocationArea(_ locationID: UUID)
+    {
+        guard canAdjustArea(locationID) else { return }
+        let job = begin(.editingLocation)
+        jobTask = Task
+        { [weak self, store, id] in
+            guard let self else { return }
+            defer { finish(job) }
+            do
+            {
+                try await flushEdits()
+                let adjustment = try await store.areaAdjustment(id: id, locationID: locationID)
+                let record = try await store.editLocation(id: id, locationID: adjustment.locationID)
+                try Task.checkCancellation()
+                adoptEditor(record)
+                mapEdit.cancel()
+                areaAdjustment = adjustment
+                refreshMapSelection()
+                let request = try adjustment.area.request(detail: .standard)
+                mapFocus = .init(center: adjustment.area.center, width: request.widthMeters, height: request.depthMeters)
+            }
+            catch { jobError = error is CancellationError ? nil : error.localizedDescription; jobFailureStatus = "Area adjustment unavailable" }
+        }
+    }
+
+    func cancelAreaAdjustment()
+    {
+        guard !isBusy, areaAdjustment != nil else { return }
+        mapEdit.cancel()
+        areaAdjustment = nil
+        refreshMapSelection()
+        if let location = editingLocation, let request = try? location.area.request(detail: .standard)
+        { mapFocus = .init(center: location.area.center, width: request.widthMeters, height: request.depthMeters) }
     }
 
     func showLocation(_ locationID: UUID)
     { changeLocation { [store, id] in try await store.editLocation(id: id, locationID: locationID) } }
 
+    func canChangeVariantDetail(_ captureID: UUID) -> Bool
+    { !isBusy && areaAdjustment == nil && captureStatuses[captureID]?.canChangeDetail == true }
+
+    func setVariantDetail(_ value: EarthProjectDetail, captureID: UUID)
+    {
+        guard canChangeVariantDetail(captureID), let variant = captures.first(where: { $0.id == captureID }), variant.detail != value else { return }
+        let job = begin(.editingVariant, captureID: captureID)
+        jobTask = Task
+        { [weak self, store, id] in
+            guard let self else { return }
+            defer { finish(job) }
+            do
+            {
+                try await flushEdits()
+                let record = try await store.changeVariantDetail(id: id, captureID: captureID, detail: value)
+                adoptEditor(record)
+                if selectedCaptureID == captureID { apply(opened: try await store.open(id: id), restoresEditor: false) }
+                await refreshCaptureStatuses()
+            }
+            catch { await failed(error, job: job) }
+        }
+    }
+
     func addVariant(_ locationID: UUID)
-    { changeLocation { [store, id] in try await store.addVariant(id: id, locationID: locationID) } }
+    {
+        guard canAddVariant, let confirmation, confirmation.locationID == locationID else { return }
+        let job = begin(.addingVariant)
+        jobTask = Task
+        { [weak self, captureService] in
+            guard let self else { return }
+            defer { finish(job) }
+            do
+            {
+                try await flushEdits()
+                let archive = try await captureService.start(selection: confirmation)
+                try await apply(archive: archive)
+                operationCaptureID = selectedCaptureID
+                prepared = nil
+                preview.clear()
+            }
+            catch { await failed(error, job: job) }
+        }
+    }
 
     private func changeLocation(_ operation: @escaping @Sendable () async throws -> EarthProjectRecord)
     {
         guard !isBusy else { return }
+        cancelAreaAdjustment()
         let job = begin(.editingLocation)
         jobTask = Task
         { [weak self] in
@@ -260,13 +359,13 @@ final class EarthProjectViewModel: Identifiable
         }
     }
 
-    func revealCapture(_ captureID: UUID)
+    func revealCapture(_ captureID: UUID, preparedModels: Bool = false)
     {
         guard captures.contains(where: { $0.id == captureID }) else { return }
         revealErrors[captureID] = nil
         Task
         { [weak self, captureService] in
-            do { try await captureService.revealCapture(captureID) }
+            do { try await captureService.revealCapture(captureID, preparedModels: preparedModels) }
             catch { self?.revealErrors[captureID] = error.localizedDescription }
         }
     }
@@ -347,6 +446,7 @@ final class EarthProjectViewModel: Identifiable
     func selectCapture(_ captureID: UUID, onSelected: @escaping @MainActor () -> Void)
     {
         guard !isBusy, captures.contains(where: { $0.id == captureID }) else { return }
+        cancelAreaAdjustment()
         if selectedCaptureID == captureID
         {
             onSelected()
@@ -446,39 +546,35 @@ final class EarthProjectViewModel: Identifiable
         }
     }
 
-    func download(onDownloaded: @escaping @MainActor () -> Void, onPrepared: @escaping @MainActor () -> Void)
+    func applyAreaAdjustment()
     {
-        guard canDownload, let confirmation else { return }
-        guard hasAPIKey else { jobError = "Add an API key in Settings before downloading."; jobFailureStatus = "API key required"; return }
-        let key = settings.apiKey
-        let job = begin(.starting)
+        guard canApplyAreaAdjustment, let adjustment = areaAdjustment else { return }
+        let job = begin(.editingLocation)
         jobTask = Task
-        { [weak self, captureService] in
+        { [weak self, store, id] in
             guard let self else { return }
             defer { finish(job) }
             do
             {
                 try await flushEdits()
-                let archive = try await captureService.start(selection: confirmation)
-                operationCaptureID = UUID(uuidString: archive.directoryURL.lastPathComponent)
-                try await apply(archive: archive)
-                prepared = nil
-                preview.clear()
-                try Task.checkCancellation()
-                try await transfer(archive: archive, apiKey: key, job: job, onDownloaded: onDownloaded, onPrepared: onPrepared)
+                let record = try await store.applyAreaAdjustment(id: id, adjustment: adjustment)
+                areaAdjustment = nil
+                if record.captureLocation?.id == adjustment.locationID { preview.clear() }
+                apply(opened: try await store.open(id: id), restoresEditor: true)
+                await refreshCaptureStatuses()
             }
             catch { await failed(error, job: job) }
         }
     }
 
-    func resume(onDownloaded: @escaping @MainActor () -> Void, onPrepared: @escaping @MainActor () -> Void)
+    func download(onPrepared: @escaping @MainActor () -> Void)
     {
-        guard !isBusy, let archive = downloads.archive, archive.state != .downloaded else { return }
+        guard !isBusy, areaAdjustment == nil, let archive = downloads.archive, archive.state != .downloaded else { return }
         guard hasAPIKey
         else
         {
             operationCaptureID = selectedCaptureID
-            jobError = "Add an API key in Settings before resuming."
+            jobError = "Add an API key in Settings before downloading."
             jobFailureStatus = "API key required"
             return
         }
@@ -488,9 +584,29 @@ final class EarthProjectViewModel: Identifiable
         { [weak self] in
             guard let self else { return }
             defer { finish(job) }
-            do { try await flushEdits(); try await transfer(archive: archive, apiKey: key, job: job, onDownloaded: onDownloaded, onPrepared: onPrepared) }
+            do { try await flushEdits(); try await transfer(archive: archive, apiKey: key, job: job, onPrepared: onPrepared) }
             catch { await failed(error, job: job) }
         }
+    }
+
+    func exportVariant(_ variantID: UUID)
+    {
+        guard !isBusy, captureStatuses[variantID]?.archive?.state == .downloaded else { return }
+        export.export(variantID: variantID, saveEdits: { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await flushEdits()
+        }, onFinished: { [weak self, store, id] in
+            // Offline preparation may have committed even if export was cancelled.
+            // Reload independently of the cancelled worker before enabling actions.
+            let reload = Task { try await store.open(id: id) }
+            do
+            {
+                let opened = try await reload.value
+                guard let self else { return }
+                apply(opened: opened, restoresEditor: !hasPendingEdits && persistenceError == nil)
+            }
+            catch { self?.persistenceError = error.localizedDescription }
+        })
     }
 
     func preparePreview(onPrepared: @escaping @MainActor () -> Void)
@@ -512,6 +628,7 @@ final class EarthProjectViewModel: Identifiable
         jobTask?.cancel()
         if phase != .idle { progressText = "Stopping…" }
         else if preview.isLoading { preview.cancel() }
+        else if export.isLoading { export.cancel() }
     }
 
     private func begin(_ phase: EarthProjectJobPhase, captureID: UUID? = nil) -> UUID
@@ -532,7 +649,7 @@ final class EarthProjectViewModel: Identifiable
         jobTask = nil
     }
 
-    private func transfer(archive: EarthSourceArchive, apiKey: String, job: UUID, onDownloaded: @MainActor () -> Void, onPrepared: @MainActor () -> Void) async throws
+    private func transfer(archive: EarthSourceArchive, apiKey: String, job: UUID, onPrepared: @MainActor () -> Void) async throws
     {
         phase = .downloading
         let completed = try await captureService.download(archive: archive, apiKey: apiKey)
@@ -547,8 +664,6 @@ final class EarthProjectViewModel: Identifiable
         guard jobID == job else { throw CancellationError() }
         try await apply(archive: completed)
         try Task.checkCancellation()
-        phase = .preparing
-        onDownloaded()
         try await prepare(archive: completed, job: job, onPrepared: onPrepared)
     }
 
@@ -587,7 +702,7 @@ final class EarthProjectViewModel: Identifiable
         adoptEditor(record)
         selectedCaptureID = record.selectedCaptureID
         downloads.restore(archive)
-        savedStatus = archive.state == .downloaded ? "Downloaded" : "Paused"
+        savedStatus = EarthProjectCaptureStatus(archive: archive, errorMessage: archive.interruptionReason).title
         updateCaptureStatus()
     }
 
@@ -599,11 +714,15 @@ final class EarthProjectViewModel: Identifiable
         prepared = opened.prepared
         savedStatus = opened.status
         updateCaptureStatus()
+        export.reloadHistory()
         if restoresEditor { adoptEditor(opened.record) }
     }
 
     private func adoptEditor(_ record: EarthProjectRecord)
     {
+        if let adjustment = areaAdjustment,
+           record.locations.first(where: { $0.id == adjustment.locationID }).map({ adjustment.matches($0) }) != true
+        { mapEdit.cancel(); areaAdjustment = nil }
         title = record.title
         searchAddress = record.searchAddress
         searchResult = record.searchResult
@@ -618,7 +737,11 @@ final class EarthProjectViewModel: Identifiable
         if let selectedCaptureID, let archive = downloads.archive
         {
             captureStatusRevisions[selectedCaptureID, default: 0] &+= 1
-            captureStatuses[selectedCaptureID] = .init(archive: archive, errorMessage: archive.interruptionReason)
+            let historyAllowsDetailChange = selectedCapture?.previousCaptures.isEmpty == true || captureStatuses[selectedCaptureID]?.canChangeDetail == true
+            let canChangeDetail = historyAllowsDetailChange && selectedCapture?.preparation == nil && EarthProjectCaptureStatus.isUnstarted(archive)
+            let historyAllowsAreaChange = selectedCapture?.previousCaptures.isEmpty == true || captureStatuses[selectedCaptureID]?.canChangeArea == true
+            let canChangeArea = historyAllowsAreaChange && selectedCapture?.preparation == nil && archive.state != .downloaded
+            captureStatuses[selectedCaptureID] = .init(archive: archive, errorMessage: archive.interruptionReason, canChangeDetail: canChangeDetail, canChangeArea: canChangeArea)
         }
     }
 
@@ -663,7 +786,7 @@ final class EarthProjectViewModel: Identifiable
     {
         confirmation = nil
         mapInputError = nil
-        guard let location = editingLocation, location.variantDetail != nil else { return }
+        guard let location = editingLocation else { return }
         do { confirmation = try EarthConfirmedSelection(location: location) }
         catch { mapInputError = error.localizedDescription }
     }
@@ -686,7 +809,13 @@ final class EarthProjectViewModel: Identifiable
                 pendingTitle = nil
                 do
                 {
-                    _ = try await store.updateEditor(id: id, title: titleValue, searchAddress: searchValue, locations: locationValues)
+                    let record = try await store.updateEditor(id: id, title: titleValue, searchAddress: searchValue, locations: locationValues)
+                    for (locationID, submitted) in locationValues
+                    {
+                        guard let index = locations.firstIndex(where: { $0.id == locationID }), locations[index].edit == submitted,
+                              let saved = record.locations.first(where: { $0.id == locationID }) else { continue }
+                        locations[index].name = saved.name
+                    }
                     persistenceError = nil
                 }
                 catch
@@ -705,19 +834,20 @@ final class EarthProjectViewModel: Identifiable
 
 enum EarthProjectJobPhase: Equatable
 {
-    case idle, resolving, starting, downloading, preparing, refreshing, selectingCapture, editingLocation, deleting
+    case idle, resolving, addingVariant, downloading, preparing, refreshing, selectingCapture, editingLocation, editingVariant, deleting
     var title: String
     {
         switch self
         {
             case .idle: ""
             case .resolving: "Finding address…"
-            case .starting: "Starting download…"
+            case .addingVariant: "Adding variant…"
             case .downloading: "Downloading"
             case .preparing: "Preparing"
             case .refreshing: "Refreshing project…"
             case .selectingCapture: "Opening capture…"
             case .editingLocation: "Updating location…"
+            case .editingVariant: "Updating variant…"
             case .deleting: "Moving to Trash…"
         }
     }

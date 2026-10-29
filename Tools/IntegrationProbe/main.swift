@@ -50,6 +50,7 @@ do
         "meshCount": capture.meshes.count,
         "vertexCount": capture.vertexCount,
         "triangleCount": capture.triangleCount,
+        "omittedDegenerateTriangleCount": capture.omittedDegenerateTriangleCount,
         "sourceFileCount": capture.sourceFiles.count,
         "sourceBytes": capture.sourceByteCount,
         "boundsMinimum": [capture.bounds.minimum.x, capture.bounds.minimum.y, capture.bounds.minimum.z],

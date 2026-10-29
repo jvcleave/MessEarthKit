@@ -28,6 +28,13 @@ enum EarthAppMetadata: Sendable
 {
     case settings
     case project(UUID)
+    case exports(UUID)
+}
+
+struct EarthProjectExportDestination: Sendable
+{
+    let id: UUID
+    let fileURL: URL
 }
 
 enum EarthProjectArtifact: String, Sendable
@@ -229,6 +236,48 @@ actor EarthAppFiles
         catch { throw EarthAppFilesError.storage }
     }
 
+    /// Each export owns a fresh output folder; SDK publication creates the file.
+    func newGLBExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, includeTextures: Bool) throws -> EarthProjectExportDestination
+    {
+        let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
+        var stem = name.components(separatedBy: allowed.inverted).filter { !$0.isEmpty }.joined(separator: "_")
+            .trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
+        while stem.utf8.count > 200 { stem.removeLast() }
+        guard !stem.isEmpty else { throw EarthLocationNamingError.invalidName }
+        let suffix = includeTextures ? "" : "_Geometry"
+        let directory = try newArtifactDirectory(projectID: projectID, kind: .output)
+        try ensureManagedDirectory(directory)
+        guard let id = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
+        return .init(id: id, fileURL: directory.appendingPathComponent("\(stem)_\(detail.title)\(suffix).glb"))
+    }
+
+    func exportFileURL(projectID: UUID, record: EarthProjectExportRecord) throws -> URL
+    {
+        try record.validate()
+        return try resolve(reference: record.reference, projectID: projectID)
+    }
+
+    func exportFileIsAvailable(projectID: UUID, record: EarthProjectExportRecord) throws -> Bool
+    {
+        let url = try exportFileURL(projectID: projectID, record: record)
+        guard let values = try attributes(url) else { return false }
+        guard values[.type] as? FileAttributeType == .typeRegular, let size = values[.size] as? NSNumber
+        else { throw EarthAppFilesError.invalidLocation }
+        return size.intValue > 0
+    }
+
+    func discardEmptyExportDirectory(containing fileURL: URL, projectID: UUID) throws
+    {
+        let directory = fileURL.deletingLastPathComponent()
+        try validateArtifactDirectory(directory, projectID: projectID, kind: .output)
+        do
+        {
+            guard try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty else { return }
+            try FileManager.default.removeItem(at: directory)
+        }
+        catch { throw EarthAppFilesError.storage }
+    }
+
     func requestUsageURL() throws -> URL
     {
         let folder = storageRootURL.appendingPathComponent("stats", isDirectory: true)
@@ -272,8 +321,11 @@ actor EarthAppFiles
         guard let values = try attributes(url)
         else
         {
-            if case .settings = location { return nil }
-            throw EarthAppFilesError.missingFile
+            switch location
+            {
+                case .settings, .exports: return nil
+                case .project: throw EarthAppFilesError.missingFile
+            }
         }
         guard values[.type] as? FileAttributeType == .typeRegular,
               let size = values[.size] as? NSNumber, size.intValue > 0, size.intValue <= Self.maximumMetadataBytes
@@ -356,8 +408,13 @@ actor EarthAppFiles
     {
         switch location
         {
-            case .settings: storageRootURL.appendingPathComponent("appSettings.json")
-            case let .project(id): try projectLocations(id: id).manifestURL
+            case .settings: return storageRootURL.appendingPathComponent("appSettings.json")
+            case let .project(id): return try projectLocations(id: id).manifestURL
+            case let .exports(id):
+                let project = try projectLocations(id: id)
+                guard let values = try attributes(project.manifestURL), values[.type] as? FileAttributeType == .typeRegular
+                else { throw EarthAppFilesError.missingFile }
+                return project.directoryURL.appendingPathComponent("exports.json")
         }
     }
 

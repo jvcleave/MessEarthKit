@@ -6,7 +6,7 @@ import simd
 /// the decoder; tile placement remains in the unchanged external tileset.
 enum EarthDerivativeGLB
 {
-    static func encode(vertices: [EarthVertex], indices: [UInt32], material: EarthMaterial, name: String, attributions: [String], sourceID: String, preparationProfile: EarthPreparationProfile? = nil) throws -> Data
+    static func encode(vertices: [EarthVertex], indices: [UInt32], material: EarthMaterial, name: String, attributions: [String], sourceID: String, preparationProfile: EarthPreparationProfile? = nil, omittedDegenerateTriangleCount: Int = 0) throws -> Data
     {
         guard !vertices.isEmpty, !indices.isEmpty else { throw EarthImportError.invalidContent("Empty subdivision output.") }
         var binary = Data()
@@ -57,6 +57,12 @@ enum EarthDerivativeGLB
         {
             var extras = json["extras"] as! [String: Any]
             extras["messEarthKitPreparation"] = ["profile": try JSONSerialization.jsonObject(with: JSONEncoder().encode(preparationProfile))]
+            json["extras"] = extras
+        }
+        if omittedDegenerateTriangleCount > 0
+        {
+            var extras = json["extras"] as! [String: Any]
+            extras["messEarthKitOmittedDegenerateTriangleCount"] = omittedDegenerateTriangleCount
             json["extras"] = extras
         }
         if material.isUnlit { json["extensionsUsed"] = ["KHR_materials_unlit"] }

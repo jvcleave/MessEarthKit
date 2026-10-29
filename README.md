@@ -25,39 +25,66 @@ Settings holds the shared API key, request counter and usage details. **Save Key
 in Keychain** explicitly persists an entered key; the secure field otherwise stays
 in memory. Usage is app-wide and remains active while Settings is offscreen.
 
-The flow is **Project → Add Location → Download Tiles → 3D Preview**. Controls
+The flow is **Project → Add Location → Add Variant → Download → 3D Preview**. Controls
 stay on the left and MapKit stays on the right. Entering an address and choosing
 **Update Map** moves the camera to a starting point. Searching or browsing never
 creates or moves an existing location, or enters Google acquisition.
 
-**Add Location** creates an editable area at the current map center. Name it,
-set Width/Height in meters and choose the first variant's Detail. On the map,
-pan and zoom normally; **Edit Area** lets you drag inside the box to move it or
-drag its eight edge/corner handles to resize. **Draw Area** replaces the draft's
-rectangle by dragging between two corners. The camera stays still during editing.
-The box and numeric dimensions preview together; release saves once. Choose
-**Done** to finish editing and return to panning and zooming. Escape or leaving
-the screen discards an unfinished drag. **Move to Map Center**
-and numeric fields remain available. These interactions start no downloads. Whole intersecting edge tiles may extend beyond the shown
-footprint. Polar/large map-display limits do not cap the source request.
+**Add Location** creates an editable area at the current map center. Name it and
+set Width/Height in meters. The existing map box is directly editable: drag
+inside it to move it, or drag its eight
+edge/corner handles to resize. Pan and zoom outside the box. **Draw Area** replaces
+the draft's rectangle by dragging between two corners. The same box stays visible
+while editing; its numeric dimensions preview together, and release saves once.
+Choose **Done** to hide the handles; click the box to show them again. The camera
+stays still during an area drag or drawing. Escape or leaving the screen discards
+an unfinished drag. Numeric fields remain available. These interactions start no
+downloads. Whole intersecting edge tiles may extend beyond the shown footprint.
+Polar/large map-display limits do not cap the source request.
 
-**Download Tiles** freezes that location's area and registers a resumable source
-journal before the first Google request. Pause, failure and deleting variants
-never unlock its area. **Add Variant** allows a new Detail choice for the same
-frozen footprint. **Copy Location** creates a new unlocked draft using the area
-and detail settings, with no acquired/prepared files. Move or resize the copy
-before its own first download.
+New locations resolve the city at the actual capture centre and start with a
+name such as **Chicago · 41.87811, -87.62980**. Automatic names refresh when their
+centre changes; typing a Name makes it custom and preserves it through later
+area edits. Coordinates in the display use five decimal places; the stored
+capture centre retains full precision. City naming uses MapKit on macOS 26 or
+later. An unsupported system or failed city lookup reports an error and does
+not invent a name from the last address search.
 
-Each location contains its variant cards, with detail/dimensions/date/status,
-**Reveal in Finder** and **Preview**, or **Resume Download**. Preview/reveal/resume
-preserve search and other location drafts. Preview prepares models offline when
-needed; completion advances only from the initiating route, and Back never
-cancels work or lets late completion steal focus. **Show on Map** explicitly
+**Add Variant** saves a variant for the selected area offline. Adding the first
+variant freezes that location's area and registers a resumable source journal;
+it requires no API key and makes no Google requests. Each variant card owns its
+**Detail** picker, which can change before that variant starts downloading.
+New variants inherit the location's existing default/detail from its latest
+variant or copied settings. Add another variant to choose a different detail
+after downloading has started.
+Normal area fields stay locked after saving variants; Adjust Area explicitly
+opens the shared box for editing until a variant finishes downloading.
+**Copy Location**, next to **Show on Map**, creates a new unlocked draft using
+that location's area and default detail, with no acquired/prepared files. Move or resize the copy before
+adding its first variant.
+
+Each location appears once, with its setup controls followed by a **Variants**
+list after the first variant is added. **Show on Map** selects that location's
+setup controls. Each variant card shows its detail title, Detail picker and status,
+with **Download** for a saved, not-yet-downloaded variant.
+Download requires an API key and uses that card's exact saved request. Started
+variants keep their detail fixed, including after pause or a shared area change. Detail
+changes before downloading stay offline, preserve earlier empty journals and
+leave sibling variants and the location's area unchanged. Downloads offer
+**Pause Download** / **Resume Download**; completed downloads
+offer **Reveal Download** and **Preview**. These actions preserve search and other
+location drafts. Downloads prepare models offline without opening Preview.
+Choose **Preview** to enter the viewer; preparation continues if still underway.
+Back never cancels work or lets late completion steal focus. **Show on Map** explicitly
 focuses a location for editing or review.
-If an attempt fails because the area has no coverage, use **Adjust Area** on its
-card. It opens an editable copy with that attempt's area/detail; change Width/
-Height or its center, then Download Tiles. The original attempt remains retained.
-Adjust Area is also available directly below a frozen location's dimensions.
+**Adjust Area**, beneath Height, edits the location's one shared capture box.
+Before any variant finishes downloading, move or resize that box and choose
+**Apply Area** to update every pending variant together. Each variant keeps its
+detail and identity and receives a fresh empty source attempt. Applying stays
+offline; use each variant's **Download** button afterward. **Cancel Adjustment**
+discards the area draft. Earlier partial downloads and journals stay in their
+variants' source history. A completed current or retained historical capture
+fixes the location's area; use **Copy Location** to capture a different box.
 
 Projects, locations and variants have confirmed trash actions. Location deletion
 includes its variants, while variant deletion retains the frozen location and
@@ -80,8 +107,53 @@ published scene. Leaving Preview releases displayed resources without cancelling
 its worker; hidden completion can reopen offline.
 
 The [location model and basic controls](docs/internal/plans/PROJECT_WORKFLOW_REORGANIZATION_PLAN.md#next-approved-milestone-locations-and-detail-variants)
-and map move/resize/rectangle drawing are implemented. The Export screen is next.
-The SDK folder/combined-GLB exporters below remain implemented independently of that remaining UI work. No live GUI acceptance has
+and map move/resize/rectangle drawing are implemented.
+Each variant card offers **Export GLB** for its entire capture. Export checkboxes
+select normals, vertex colors, UV coordinates, materials and textures. **Full**
+includes all data by default; **Untextured** omits images and texture references;
+**Minimal** keeps positions and triangle indices. Shared placement, identity and
+attribution are always retained. Enabling textures enables UVs and materials;
+disabling either disables textures. Choices are scoped to the variant and captured
+when export starts. Each export writes a new file in the
+project's `output/<export UUID>/` folder. The card lists its completed exports,
+their texture choice and **Show Export in Finder** for available files. History
+persists after reopening, including the exact source and preparation used;
+missing files remain listed as unavailable. **Export Again** creates another file.
+Export prepares models offline if needed, targets that card without changing
+preview selection, and runs without opening Preview or requiring it to fit. It
+streams one prepared part at a time. GLB format and metadata limits still apply;
+export size does not guarantee capacity in another app.
+Google's documented 3D Tiles requests have no texture-off parameter. Image bytes
+arrive in the downloaded tile payloads, so excluding textures from this output
+does not reduce API requests or download traffic. Original sources and prepared
+models retain their textures for later exports. Version-1 `exports.json` is
+created beside `project.json` with the first tracked export; existing schema-5
+projects remain unchanged. Earlier untracked outputs are not automatically
+assigned to variants. Corrupt history is reported without replacement. A failure
+to save history after GLB publication reports the retained, unrecorded file.
+Large regions can use **Model Parts** in Preview, with Previous/Next controls to
+load one prepared model at full detail. **Entire Region** retains the aggregate
+memory check. Part preview retains shared coordinates;
+it does not resize the downloaded content or imply that all parts are displayed.
+The **Display** menu offers **Textured**, **Solid (no textures)** and **Wireframe
+(no textures)**. Wireframe is the default; Textured retains original material appearance.
+Solid shows neutral shaded surfaces, and Wireframe shows triangle edges. Both
+geometry modes skip image uploads, mipmaps, fallback textures and samplers, and
+exclude source textures from preview admission estimates. Full geometry, current
+GPU allocations, viewport space and upload headroom still count toward the budget.
+Changing Display reloads the current whole-region or part preview and releases
+the previous scene. The choice survives navigation during this app session and
+resets to Wireframe after relaunch. It does not change downloaded/prepared files,
+or the separate export options.
+The preview's **Automatic preview memory** control uses half Metal's recommended
+working set for this Mac, with no fixed 1 GiB ceiling. Turn it off,
+enter a custom **Budget (GiB)** and choose **Reload Preview** to override that
+policy for the next load. Both whole-region and part previews use the chosen
+budget, including existing GPU allocations, viewport reserve and upload headroom.
+This preview-session choice survives navigation and resets to Automatic after
+relaunch; no saved project or settings format changes. Metal allocation checks
+remain active, and the original downloaded/prepared files are unchanged.
+The SDK folder/combined-GLB exporters below remain available independently of the app. No live GUI acceptance has
 been claimed by the headless checks and build.
 
 When developing alongside MessScene in a MESS checkout, open the parent
@@ -133,16 +205,36 @@ the result. It does not substitute a newer directory when a required reference i
 missing or corrupt. Original files are copied rather than hard-linked on export.
 
 `EarthCaptureStore` saves an aligned model folder. `EarthGLBExporter` preflights
-and writes one standalone GLB for a selected collection. The future project
-Export screen will expose a whole-capture file/folder choice using these APIs.
+and writes one standalone GLB for a selected collection. Preview exposes
+whole-capture GLB export; the future project Export screen will expose the
+file/folder choice using these APIs.
 
-Combined export retains independent meshes/materials, embedded image bytes,
+By default, combined export retains independent meshes/materials, embedded image bytes,
 sampler/mipmap settings, vertex colors, normals, UVs and shared local placement.
 It does not weld meshes, resize images or decode the entire collection at once.
 Geometry is written as ordinary uncompressed glTF, so the file can be larger than
 the compressed source downloads. Origin, source/profile identifiers, selected
 IDs, individual attribution and full/subset/partial coverage are recorded in
 extras.messEarthKitCombinedAsset. The SDK restores these when reopening the GLB.
+App exports use the location name and variant detail in a sanitized filename,
+for example `Chicago_41.87811_-87.62980_High.glb`; geometry-only filenames append
+`_Geometry`. The GLB scene and root node retain the unmodified chosen name.
+`extras.messEarthKitCaptureIdentity` records the name, full-precision capture
+request (centre, ellipsoid height, dimensions and geometric error) and detail
+name. SDK callers can pass `EarthCaptureIdentity` to export preflight; reopening
+returns it as `EarthCapture.identity` and restores the authored capture name.
+Pass `options: .untextured` to `preflight` for a texture-free GLB, `.minimal` for
+positions and triangle indices, or a custom `EarthGLBExportOptions` value to select
+individual attributes/materials. Textures require UV coordinates and materials;
+inconsistent SDK choices fail explicitly. The plan captures its options and exact
+output byte count; omitted vertex channels occupy no binary space. Choices are
+recorded in `extras.messEarthKitExportOptions`, alongside the existing texture-mode
+marker. The output texture estimate is zero when textures are omitted. Source
+model loading still uses the prepared collection's original bounded import profile.
+Existing export history retains its schema and texture flag; detailed choices
+are recorded in each new GLB. Omitting normals, colors or materials can change
+shading, tint or sidedness in a consuming viewer. This does not compress or weld
+the mesh.
 
 Preflight rejects aggregate geometry, texture, object/accessor, encoded file-size
 or JSON working-set excess before creating output. It fingerprints selected
@@ -162,6 +254,17 @@ recorded profiles. Failed/cancelled preparations retain completed model folders
 and the entire raw download. Export creates a new folder or GLB and never replaces
 an existing destination.
 
+When source normals are absent, flat normals are calculated from double-precision
+source edges before output-position rounding, with the inverse-transpose node
+transform. Exactly zero-area source triangles are omitted individually; small
+nonzero triangles are retained. A scene with no usable triangles still fails,
+as do malformed/non-finite attributes. Raw GLBs remain unchanged.
+`EarthCapture.omittedDegenerateTriangleCount` reports omissions, including those
+recorded in derivative/combined GLB extras as
+`messEarthKitOmittedDegenerateTriangleCount`. Subdivision records the source count
+once across its parts; repeated placements count independently. The integration
+probe includes the count in its JSON report.
+
 `EarthPreparationAppearancePolicy.optimizedCopy` is an explicit opt-in choice
 in the destination profile. It allows portable texture splitting that can change distant
 texture appearance, crop seams and smooth lighting. Each cropped PNG keeps its
@@ -169,7 +272,7 @@ full-resolution decoded base pixels; original downloads are untouched. The
 requested mipmap filter is retained and the consuming renderer generates new
 mipmaps for each crop. New clipped normals are normalized approximations; a zero
 interpolated normal falls back to the triangle's geometric normal. Invalid
-degenerate surfaces still fail explicitly. This option does not resize imagery
+degenerate clipped surfaces still fail explicitly. This option does not resize imagery
 or promise a smaller encoded file.
 
 The selected policy is saved in preparation profiles, individual derivatives,
@@ -231,11 +334,14 @@ small atomic metadata operations and external authorization lifetime. SDK worker
 retain their bounded streaming, hashing, SQLite and artifact-publication paths.
 See the [app storage policy](docs/internal/architecture/MESS_EARTH_APP_STORAGE.md).
 
-Project metadata uses strict schema 3: independent title/search state, locations
-with center/dimensions and permanent frozen timestamps, nested detail variants,
+Project metadata uses strict schema 5: independent title/search state, locations
+with an explicit automatic/custom name, center/dimensions and permanent frozen timestamps, nested detail variants,
 editing location ID and an independent active capture ID. Each variant owns its
-exact request/source/prepared reference. Registration freezes a location and pins
-a source atomically. Copying never reuses source/prepared references. Title/search/
+stable ID, exact current request/source/prepared reference and earlier source
+attempt references. Registration freezes a location and pins a source atomically.
+Applying a location area edit updates all pending variants together while
+preserving their IDs and earlier files; any completed capture locks the area. Confirmed
+variant/location deletion includes every recorded attempt. Copying never reuses source/prepared references. Title/search/
 location edits serialize, and activation cannot overwrite a location draft.
 Settings stay schema 1; neither metadata format stores credentials. Unknown
 versions and missing required keys fail explicitly. No runtime old-format reader,
@@ -321,8 +427,15 @@ Common setup issues:
 ## Import into MessScene
 
 The MESS workspace's MessScene app can import saved capture folders through
-**MODELS → EARTH CAPTURES → IMPORT**. Choose the folder containing `tileset.json`
-and its local payloads, then press the imported thumbnail to place the model.
+**MODELS → EARTH CAPTURES → IMPORT**. For a large download, choose its ready
+`prepared/<collection UUID>` folder, containing `preparation.sqlite` and
+`tileset.json`. MessScene imports each prepared part as its own library model,
+preserving the shared local frame. Press individual thumbnails to place the
+models needed in the scene. You can also choose one prepared model folder from
+that collection's `models/` directory. Completed imports remain if a later part
+fails or you cancel. Importing every part does not require placing every part.
+The raw `sources/<source UUID>` folder still has the older single-model staging
+limits; it is not the route for large-region import.
 MessScene owns copies of the sources, geometry, and images; subsequent placement
 and saved-scene reopening do not need the original folder or a Google key.
 Partial source captures retain their incomplete report in the model library.
@@ -403,7 +516,8 @@ For combined standalone delivery, preflight the selected collection first:
 ```swift
 let exporter = EarthGLBExporter()
 let combined = try await exporter.preflight(
-    collection: prepared, selection: .all(), destination: profile
+    collection: prepared, selection: .all(), destination: profile,
+    options: .untextured // Use .full (the default), .minimal or custom options.
 )
 if combined.canExport {
     let glb = try await exporter.export(plan: combined, fileURL: newGLBFileURL)
