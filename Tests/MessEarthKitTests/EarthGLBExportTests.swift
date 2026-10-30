@@ -66,6 +66,27 @@ func combinedGLBInfoFailurePreservesPublishedGeometry(blocksCompanion: Bool) asy
     }
 }
 
+// A real export produced this small Float bound. Foundation can parse its JSON
+// decimal as NSDecimalNumber, which does not bridge through an exact [Float] cast.
+@Test func combinedGLBInfoPublishesForDecimalBounds() async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let boundary = Float(0.034270007163286209)
+    let source = try flatNormalFixture(positions: [SIMD3(0, boundary, 0), SIMD3(1, boundary, 0), SIMD3(0, 1, 0)], indices: [0, 1, 2])
+    let raw = try preparationArchive(parent: parent, count: 1, sourceOverride: source)
+    let profile = try EarthPreparationProfile()
+    let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    let exporter = EarthGLBExporter()
+    let plan = try await exporter.preflight(collection: collection, destination: profile, options: .minimal)
+    let delivery = try await exporter.exportWithInfo(plan: plan, fileURL: parent.appendingPathComponent("decimal.glb"))
+    let info = try EarthGLBInfo.decode(Data(contentsOf: #require(delivery.infoURL)))
+    #expect(delivery.infoWarning == nil)
+    let imported = try await EarthCaptureImporter().importFile(fileURL: delivery.fileURL)
+    #expect(info.geometry.minimum == [imported.bounds.minimum.x, imported.bounds.minimum.y, imported.bounds.minimum.z])
+    #expect(info.geometry.maximum == [imported.bounds.maximum.x, imported.bounds.maximum.y, imported.bounds.maximum.z])
+}
+
 // Reuse the independent authored/Draco fixtures and triangle/material comparer.
 // Distinct risks: local placement, baked reflections/UVs/colors, generated
 // normals, compressed-to-ordinary geometry, selection and embedded image bytes.

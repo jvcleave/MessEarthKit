@@ -34,10 +34,12 @@ public struct EarthGLBExportPlan: Sendable
             for primitive in primitives
             {
                 guard let attributes = primitive["attributes"] as? [String: Int], let index = attributes["POSITION"], accessors.indices.contains(index),
-                      let low = accessors[index]["min"] as? [Float], let high = accessors[index]["max"] as? [Float], low.count == 3, high.count == 3
+                      let low = accessors[index]["min"] as? [NSNumber], let high = accessors[index]["max"] as? [NSNumber], low.count == 3, high.count == 3
                 else { throw EarthGLBInfoError.invalidInfo }
-                minimum = simd_min(minimum, SIMD3(low[0], low[1], low[2]))
-                maximum = simd_max(maximum, SIMD3(high[0], high[1], high[2]))
+                // JSON decimals may use NSDecimalNumber. Convert explicitly
+                // back to the accessor's Float precision instead of bridging.
+                minimum = simd_min(minimum, SIMD3(low[0].floatValue, low[1].floatValue, low[2].floatValue))
+                maximum = simd_max(maximum, SIMD3(high[0].floatValue, high[1].floatValue, high[2].floatValue))
             }
         }
         return EarthGLBInfo.Geometry(
