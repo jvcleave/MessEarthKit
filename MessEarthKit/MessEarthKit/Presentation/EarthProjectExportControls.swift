@@ -65,7 +65,7 @@ struct EarthProjectExportControls: View
                 }
                 else if !export.status.isEmpty { Text(export.status).font(.caption) }
                 if let error = export.errorMessage
-                { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                { EarthErrorMessage(error).font(.caption) }
                 if let record = export.unrecordedExport
                 { Button("Show Unrecorded File in Finder") { export.reveal(record) } }
             }
@@ -76,7 +76,7 @@ struct EarthProjectExportControls: View
                     Text(item.contentsSummary).font(.caption).fixedSize(horizontal: false, vertical: true)
                     if !item.fileIsAvailable { Text("File unavailable").font(.caption).foregroundStyle(.secondary) }
                     if let error = item.contentsError
-                    { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+                    { EarthErrorMessage(error).font(.caption) }
                     Text(item.record.fileName).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack
                     {
@@ -95,10 +95,10 @@ struct EarthProjectExportControls: View
                 }
             }
             if let error = export.managementError
-            { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
+            { EarthErrorMessage(error).font(.caption) }
             if let error = export.historyError
             {
-                Text("Export history: \(error)").font(.caption).foregroundStyle(.red).textSelection(.enabled)
+                EarthErrorMessage("Export history: \(error)").font(.caption)
                 Button("Reload Export History", action: export.reloadHistory)
                     .disabled(!canStartWork || export.isLoadingHistory)
             }

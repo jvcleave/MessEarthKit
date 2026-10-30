@@ -313,7 +313,7 @@ struct EarthProjectLibraryView: View
             if viewModel.isLoading { ProgressView().padding() }
             if let error = viewModel.errorMessage
             {
-                Text(error).foregroundStyle(.red).padding()
+                EarthErrorMessage(error).padding()
                 Button("Retry", action: viewModel.reload)
             }
             if !viewModel.failures.isEmpty
@@ -324,7 +324,7 @@ struct EarthProjectLibraryView: View
                     { failure in
                         HStack
                         {
-                            Text("Project \(failure.id.uuidString.prefix(8)): \(failure.message)").foregroundStyle(.red)
+                            EarthErrorMessage("Project \(failure.id.uuidString.prefix(8)): \(failure.message)")
                             Spacer()
                             Button(role: .destructive) { viewModel.requestProjectDeletion(failure.id) } label: { Image(systemName: "trash") }
                                 .buttonStyle(.borderless).help("Delete Project").accessibilityLabel("Delete Project")

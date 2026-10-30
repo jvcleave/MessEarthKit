@@ -11,7 +11,8 @@ Commands and source paths below assume the repository root.
 - [SDK offline estimates](#sdk-offline-estimates)
 - [Example app storage and lifecycle](#example-app-storage-and-lifecycle)
 - [Local request counter](#local-request-counter)
-- [Credentials and troubleshooting](#credentials-and-troubleshooting)
+- [Credentials](#credentials)
+- [Troubleshooting](../README.md#troubleshooting)
 - [Verify locally](#verify-locally)
 
 ## Package use
@@ -541,20 +542,15 @@ not report billing-account usage, remaining allowance or a calendar billing mont
 History contains no keys, URLs, tokens, addresses or payloads. Storage failures
 show incomplete tracking and do not stop downloads.
 
-## Credentials and troubleshooting
+## Credentials
 
 The optional Keychain generic-password item uses service
 `com.jvclabs.MessEarthKit.MapTiles` and account `default`, independently of the
 Google Cloud project ID. Save failures are explicit. Keys stay out of
 project/settings JSON and source artifacts.
 
-| Symptom | What to check |
-| --- | --- |
-| Google rejects the key | Check IP/API restrictions, API enablement, billing and quota. The app distinguishes recognized failures without displaying the server body. Check both public IPv4 and IPv6; temporary IPv6 addresses can rotate. |
-| HTTP 429 | Check the project's root-request quota and service rate limits. Changing region/detail does not reset them. |
-| Capture vertex count exceeded | Prepare a completed archive offline with a fitting destination profile. A standalone import must fit its supplied vertex budget. |
-| Capture decoded texture bytes exceeded | Prepare offline with a fitting texture profile. Standalone import counts base-level RGBA, not compressed file size or total GPU memory. |
-| Key field is empty after relaunch | Re-enter a session-only key, or check the optional Keychain item's service, account and app access. |
+For setup, error messages, IP/subnet restrictions and recovery steps, see the
+[README troubleshooting section](../README.md#troubleshooting).
 
 ## Verify locally
 

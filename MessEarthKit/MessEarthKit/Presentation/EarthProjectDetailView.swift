@@ -64,7 +64,7 @@ struct EarthProjectDetailView: View
                 if project.phase != .deleting { Button("Cancel", action: project.pause) }
             }
             if project.operationCaptureID == nil, let error = project.jobError
-            { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            { EarthErrorMessage(error) }
             if !project.hasAPIKey
             {
                 Text("Add an API key in Settings to download.").font(.caption).foregroundStyle(.secondary)
@@ -74,7 +74,7 @@ struct EarthProjectDetailView: View
             {
                 Section("Changes could not be saved")
                 {
-                    Text(error).foregroundStyle(.red)
+                    EarthErrorMessage(error)
                     Button("Retry Save", action: project.retrySave)
                 }
             }

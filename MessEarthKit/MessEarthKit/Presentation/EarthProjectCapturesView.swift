@@ -73,7 +73,7 @@ private struct EarthProjectCaptureCard: View
             }
             .lineLimit(1)
             if let error = project.captureError(variant.id)
-            { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            { EarthErrorMessage(error) }
             if project.operationCaptureID == variant.id, project.phase != .idle
             {
                 ProgressView(project.progressText).controlSize(.small)

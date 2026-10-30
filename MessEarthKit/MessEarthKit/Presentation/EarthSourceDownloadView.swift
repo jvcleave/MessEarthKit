@@ -112,7 +112,7 @@ struct EarthSourceDownloadView: View
             Text(download.status).font(.headline)
             Text(download.selectionSummary).foregroundStyle(.secondary)
             Text(download.summary).foregroundStyle(.secondary)
-            if let error = download.errorMessage { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+            if let error = download.errorMessage { EarthErrorMessage(error, color: .orange) }
             if !download.isLoading, download.archive?.state == .downloaded
             {
                 Text("Preparation runs offline. Original downloads are retained.").foregroundStyle(.secondary)
@@ -130,7 +130,7 @@ struct EarthSourceDownloadView: View
             if !viewModel.preparedModels.availabilitySummary.isEmpty
             { Text(viewModel.preparedModels.availabilitySummary).foregroundStyle(.secondary) }
             if let error = viewModel.preparedModels.availabilityError
-            { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+            { EarthErrorMessage(error, color: .orange) }
             HStack(spacing: 12)
             {
                 if download.isLoading { Button("Pause Download", action: download.pause) }

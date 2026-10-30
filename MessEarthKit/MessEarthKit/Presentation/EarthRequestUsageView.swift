@@ -146,7 +146,7 @@ struct EarthRequestUsageView: View
             }
             if let display = viewModel.display
             {
-                if let issue = display.issue { Text(issue).foregroundStyle(.orange) }
+                if let issue = display.issue { EarthErrorMessage(issue, color: .orange) }
                 Text(display.coverage).foregroundStyle(.secondary)
                 DisclosureGroup("Usage details", isExpanded: $showsDetails)
                 {

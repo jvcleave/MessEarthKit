@@ -134,7 +134,10 @@ struct EarthSettingsView: View
                 Button("Save Key in Keychain", action: viewModel.saveAPIKey)
                     .disabled(viewModel.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isSavingKey)
                 if !viewModel.credentialStatus.isEmpty { Text(viewModel.credentialStatus).foregroundStyle(.secondary) }
-                if let error = viewModel.credentialError { Text(error).foregroundStyle(.red) }
+                if let error = viewModel.credentialError { EarthErrorMessage(error) }
+                Text("For IP-restricted keys, allow this network's public outbound IPv4 and IPv6 addresses. Update them after network or VPN changes; temporary IPv6 addresses can rotate.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Link("Manage API Key Restrictions", destination: URL(string: "https://console.cloud.google.com/apis/credentials")!)
             }
             Section("Request history")
             {
@@ -144,7 +147,7 @@ struct EarthSettingsView: View
             {
                 Section("Settings could not be saved or loaded")
                 {
-                    Text(error).foregroundStyle(.red)
+                    EarthErrorMessage(error)
                     if viewModel.settings == nil { Button("Retry", action: viewModel.reloadSettings) }
                     else { Button("Retry Save", action: viewModel.savePendingSettings) }
                 }

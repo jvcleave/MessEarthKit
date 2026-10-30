@@ -56,7 +56,7 @@ struct EarthProjectPreviewView: View
             }
             if let error = project.jobError
             {
-                Text(error).foregroundStyle(.red).textSelection(.enabled).padding()
+                EarthErrorMessage(error).padding()
             }
             if project.phase == .idle, !project.preview.isLoading, !project.preview.hasPreview
             {
@@ -118,7 +118,7 @@ struct EarthProjectPreviewView: View
             Text("Automatic scales the budget to this Mac. Changes apply on reload and reset to Automatic when the app restarts.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = project.preview.memoryBudgetError
-            { Text(error).font(.caption).foregroundStyle(.red) }
+            { EarthErrorMessage(error).font(.caption) }
         }
         .disabled(!library.canStartWork || project.isBusy)
         .padding(.horizontal, 16).padding(.vertical, 8)

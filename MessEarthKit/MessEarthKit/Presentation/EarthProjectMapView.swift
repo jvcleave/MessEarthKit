@@ -71,9 +71,10 @@ struct EarthProjectMapView: View
                 }.buttonStyle(.bordered)
                 Text(mapHelp)
                     .font(.caption).foregroundStyle(.secondary)
-                Text(project.mapEdit.errorMessage ?? project.mapInputError ??
-                    (footprint?.corners.isEmpty == true ? "This footprint exceeds the map's editing range. Its numeric dimensions are retained." : ""))
-                    .foregroundStyle(.orange).font(.callout).lineLimit(2).frame(height: 36, alignment: .topLeading)
+                if let error = project.mapEdit.errorMessage ?? project.mapInputError ??
+                    (footprint?.corners.isEmpty == true ? "This footprint exceeds the map's editing range. Its numeric dimensions are retained." : nil)
+                { EarthErrorMessage(error, color: .orange).font(.callout) }
+                else { Text("").frame(height: 36) }
             }.padding(16)
             mapCanvas
                 .focusable().focused($mapIsFocused).focusEffectDisabled()

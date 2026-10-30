@@ -25,7 +25,7 @@ struct MessEarthKitApp: App
                 {
                     Label("Storage unavailable", systemImage: "folder.badge.questionmark")
                 } description: {
-                    Text(storageError)
+                    EarthErrorMessage(storageError)
                 } actions: {
                     Button("Retry") { self.storageError = nil }
                 }

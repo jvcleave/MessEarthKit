@@ -80,7 +80,7 @@ public enum EarthServiceRejection: Sendable
         switch self
         {
             case .invalidKey: "The API key is invalid, expired or missing. Enter the current key string."
-            case .ipRestricted: "This network's public IP address is not allowed by the key. Check both IPv4 and IPv6; temporary IPv6 addresses can change."
+            case .ipRestricted: "Google blocked this request because its public IP address is not allowed by the API key. In Google Cloud Console, open APIs & Services → Credentials → this key → Application restrictions → IP addresses. Add your current public outbound IPv4 and IPv6 addresses, then save and retry. Network or VPN changes and temporary IPv6 addresses can change the address Google sees."
             case .apiRestricted: "The key's API restrictions do not allow Map Tiles API (tile.googleapis.com)."
             case .applicationRestricted: "The key's application restriction does not allow this direct HTTPS macOS client. Check the key's allowed client restrictions."
             case .apiDisabled: "Enable Map Tiles API in the project associated with this key."

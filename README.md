@@ -25,7 +25,9 @@ To run from source, open `MessEarthKit/MessEarthKit.xcodeproj`, select
    **Create credentials → API key**, and create a key dedicated to MessEarthKit.
 4. Restrict the key to **Map Tiles API**. For this app's direct HTTPS requests,
    use an **IP addresses** application restriction with your public outbound
-   IPv4/IPv6 addresses. Update these if your network or VPN changes.
+   IPv4/IPv6 addresses. For rotating IPv6 addresses, you can allow your assigned
+   network subnet in CIDR notation; see [IPv6 troubleshooting](#http-403-and-rotating-ipv6-addresses).
+   Update these restrictions if your network or VPN changes.
 5. Review the project's Map Tiles API quotas and usage-based charges before
    downloading.
 6. In MessEarthKit, open **Settings** and paste the key. Choose **Save Key in
@@ -153,6 +155,46 @@ GLB decoder. The app can retain the original file for reimport or Reset.
 
 Preserve the capture's attribution when displaying it. A small GLB on disk can
 still require substantial memory after decoding geometry and images.
+
+## Troubleshooting
+
+Error messages support text selection and an explicit **Copy Error** action
+that copies the complete displayed message to the macOS clipboard. Settings
+links to Google Cloud credentials for managing key restrictions. The app
+distinguishes recognized Google failures without displaying the server body.
+
+| Symptom | What to check |
+| --- | --- |
+| Google rejects the key | Check IP/API restrictions, API enablement, billing and quota. Check both public IPv4 and IPv6; temporary IPv6 addresses can rotate. |
+| HTTP 403: public IP not allowed | Update the same key used by the app to allow the public outbound addresses Google sees, including VPN routing. See [HTTP 403 and rotating IPv6 addresses](#http-403-and-rotating-ipv6-addresses) below. |
+| HTTP 429 | Check the project's root-request quota and service rate limits. Changing region/detail does not reset them. |
+| Capture vertex count exceeded | Prepare a completed archive offline with a fitting destination profile. A standalone import must fit its supplied vertex budget. |
+| Capture decoded texture bytes exceeded | Prepare offline with a fitting texture profile. Standalone import counts base-level RGBA, not compressed file size or total GPU memory. |
+| Key field is empty after relaunch | Choose **Save Key in Keychain** in Settings to retain the key across launches. If already saved, check the Keychain item's app access; see [credential storage details](docs/TECHNICAL_REFERENCE.md#credentials). |
+
+### HTTP 403 and rotating IPv6 addresses
+
+An IP-restricted key can work over IPv4 while Google rejects requests over IPv6.
+Temporary IPv6 addresses can rotate, so allowing an individual address may fix
+the error only until the next rotation.
+
+1. Open [Google Cloud Credentials](https://console.cloud.google.com/apis/credentials)
+   and select the API key entered in the app.
+2. Under **Application restrictions → IP addresses**, allow your current public
+   outbound IPv4 and IPv6 addresses. Google checks the addresses it sees, which
+   can differ from local addresses or change when using a VPN.
+3. To cover IPv6 rotation within a network you control, confirm its assigned
+   subnet and prefix length in your network/router settings. Allow that subnet
+   in CIDR notation instead of listing each temporary address. For example,
+   `2001:db8:1234:5678::/64` covers addresses within that `/64`. This is a
+   documentation example; use your own assigned subnet. The rule permits any
+   device in that subnet that has the key to use it.
+4. Remove individual IPv6 entries covered by the subnet rule. Keep your public
+   IPv4 entry and the **Map Tiles API** restriction, save, and retry the download.
+
+This covers address rotation within the allowed subnet. If your ISP changes the
+network prefix, or you move to another network or VPN, update the allowlist.
+See [Google's IP and subnet restriction guidance](https://developers.google.com/maps/api-security-best-practices#restrict_apikey).
 
 ## SwiftPM
 

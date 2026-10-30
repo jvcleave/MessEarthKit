@@ -15,7 +15,7 @@ struct EarthRegionPreviewView: View
                 if viewModel.isLoading { ProgressView(viewModel.status).controlSize(.small) }
                 else if !viewModel.hasPreview { Text(viewModel.status).foregroundStyle(.secondary) }
                 if let notice = viewModel.appearanceNotice { Text(notice).foregroundStyle(.orange) }
-                if let error = viewModel.errorMessage { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+                if let error = viewModel.errorMessage { EarthErrorMessage(error) }
             }
             .font(.callout)
             .frame(maxWidth: .infinity, alignment: .leading)

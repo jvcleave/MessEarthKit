@@ -111,7 +111,7 @@ struct EarthModelExportView: View
                 if !export.summary.isEmpty { Text(export.summary).textSelection(.enabled) }
                 ForEach(export.issues, id: \.self) { Text($0).foregroundStyle(.orange).textSelection(.enabled) }
                 if !export.issues.isEmpty { Text("Choose fewer models, export separately, or adjust the destination in Advanced.").foregroundStyle(.secondary) }
-                if let error = export.errorMessage { Text(error).foregroundStyle(.orange).textSelection(.enabled) }
+                if let error = export.errorMessage { EarthErrorMessage(error, color: .orange) }
                 Button("Check Combined GLB", action: viewModel.checkCombinedExport)
                     .disabled(viewModel.isLoading || viewModel.preparedModels.selectedCount == 0)
             }

@@ -184,8 +184,8 @@ struct EarthPreparedModelsView: View
                 Button("Select None", action: viewModel.selectNoPreparedModels)
                 Button("Show Models", action: viewModel.showPreparedModels)
             }
-            if let reason = models.collection?.interruptionReason { Text("Models incomplete: \(reason)").foregroundStyle(.orange).font(.callout).textSelection(.enabled) }
-            if let error = models.errorMessage { Text(error).foregroundStyle(.orange).font(.callout) }
+            if let reason = models.collection?.interruptionReason { EarthErrorMessage("Models incomplete: \(reason)", color: .orange).font(.callout) }
+            if let error = models.errorMessage { EarthErrorMessage(error, color: .orange).font(.callout) }
             HStack
             {
                 Button("Previous", action: models.previousPage).disabled(!models.hasPrevious)
