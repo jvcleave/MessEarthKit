@@ -11,6 +11,7 @@ struct EarthProjectExportResult: Sendable
 {
     let output: EarthProjectExportRecord
     let fileURL: URL
+    let infoWarning: String?
 }
 
 enum EarthProjectExportError: Error, LocalizedError, Sendable
@@ -107,11 +108,21 @@ actor EarthProjectExportService
         guard plan.canExport else { throw EarthGLBExportError.requirements(plan.issues) }
         let output = try await files.newGLBExportDestination(projectID: projectID, name: identity.locationName, detail: source.variant.detail, includeTextures: options.includeTextures)
         let fileURL: URL
+        var infoWarning: String?
         do
         {
             let access = try await files.accessForExport(output.fileURL)
             defer { withExtendedLifetime(access) {} }
-            fileURL = try await exporter.export(plan: plan, fileURL: output.fileURL, progress: { progress(.exporting($0)) })
+            var preview: EarthGLBExportPreview?
+            do
+            {
+                let renderer = try EarthGLBThumbnailRenderer(geometry: plan.informationGeometry(), options: plan.options)
+                preview = EarthGLBExportPreview(consume: { try await renderer.consume($0) }, finish: { try await renderer.finish() })
+            }
+            catch { infoWarning = "The GLB information companion has no thumbnail because preview rendering is unavailable." }
+            let delivery = try await exporter.exportWithInfo(plan: plan, fileURL: output.fileURL, preview: preview, progress: { progress(.exporting($0)) })
+            fileURL = delivery.fileURL
+            infoWarning = delivery.infoWarning ?? infoWarning
         }
         catch
         {
@@ -133,7 +144,7 @@ actor EarthProjectExportService
         // even if the caller is now cancelled; never delete a completed output.
         do { _ = try await history.append(record) }
         catch { throw EarthProjectExportError.historyNotSaved(record: record, reason: error.localizedDescription) }
-        return .init(output: record, fileURL: fileURL)
+        return .init(output: record, fileURL: fileURL, infoWarning: infoWarning)
     }
 
     func exports() async throws -> [EarthProjectExportItem]

@@ -9,13 +9,15 @@ struct EarthPreviewSceneBuilder
 {
     let device: MTLDevice
     let displayMode: EarthPreviewDisplayMode
+    let exportOptions: EarthGLBExportOptions?
     private let whiteTexture: MTLTexture?
     var constantTextureBytes: Int { whiteTexture?.allocatedSize ?? 0 }
 
-    init(device: MTLDevice, displayMode: EarthPreviewDisplayMode = .textured) throws
+    init(device: MTLDevice, displayMode: EarthPreviewDisplayMode = .textured, exportOptions: EarthGLBExportOptions? = nil) throws
     {
         self.device = device
         self.displayMode = displayMode
+        self.exportOptions = exportOptions
         guard displayMode.usesTextures else { whiteTexture = nil; return }
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(pixelFormat: .rgba8Unorm_srgb, width: 1, height: 1, mipmapped: false)
         descriptor.storageMode = .shared
@@ -41,7 +43,7 @@ struct EarthPreviewSceneBuilder
                 cost.geometryBytes = try EarthPreviewMemoryCost.sum(cost.geometryBytes, EarthPreviewMemoryCost.sum(max(length, size.size), size.align))
             }
         }
-        guard displayMode.usesTextures else { return cost }
+        guard displayMode.usesTextures, exportOptions?.includeTextures != false else { return cost }
         for material in capture.materials
         {
             try Task.checkCancellation()
@@ -68,7 +70,7 @@ struct EarthPreviewSceneBuilder
                 try Task.checkCancellation()
                 let sampler = MTLSamplerDescriptor()
                 let texture: MTLTexture
-                if let source = material.baseColorTexture
+                if let source = material.baseColorTexture, exportOptions?.includeTextures != false
                 {
                     texture = try loader.newTexture(data: source.encodedImage, options: [
                         .SRGB: true, .origin: MTKTextureLoader.Origin.topLeft.rawValue,
@@ -121,7 +123,7 @@ struct EarthPreviewSceneBuilder
                 vertices: vertices,
                 indices: indices,
                 indexCount: mesh.triangleIndices.count,
-                material: EarthPreviewMaterial(capture.materials[mesh.materialIndex]),
+                material: EarthPreviewMaterial(capture.materials[mesh.materialIndex], includesMaterials: exportOptions?.includeMaterials != false),
                 texture: texture?.0,
                 sampler: texture?.1,
                 center: minimum + (maximum - minimum) / 2

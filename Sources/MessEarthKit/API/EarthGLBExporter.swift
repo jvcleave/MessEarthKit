@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import simd
 
 /// An offline preflight bound to the selected files, not just their catalog
 /// estimates. A blocked plan explains the destination constraints without
@@ -18,6 +19,37 @@ public struct EarthGLBExportPlan: Sendable
     let json: Data?
     let binaryByteCount: Int
     let models: [EarthGLBExportModel]
+
+    /// Reads the already-prepared JSON header; no geometry is decoded again.
+    public func informationGeometry() throws -> EarthGLBInfo.Geometry
+    {
+        guard let json, let document = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+              let meshes = document["meshes"] as? [[String: Any]], let accessors = document["accessors"] as? [[String: Any]]
+        else { throw EarthGLBInfoError.invalidInfo }
+        var minimum = SIMD3<Float>(repeating: .infinity)
+        var maximum = SIMD3<Float>(repeating: -.infinity)
+        for mesh in meshes
+        {
+            guard let primitives = mesh["primitives"] as? [[String: Any]] else { throw EarthGLBInfoError.invalidInfo }
+            for primitive in primitives
+            {
+                guard let attributes = primitive["attributes"] as? [String: Int], let index = attributes["POSITION"], accessors.indices.contains(index),
+                      let low = accessors[index]["min"] as? [Float], let high = accessors[index]["max"] as? [Float], low.count == 3, high.count == 3
+                else { throw EarthGLBInfoError.invalidInfo }
+                minimum = simd_min(minimum, SIMD3(low[0], low[1], low[2]))
+                maximum = simd_max(maximum, SIMD3(high[0], high[1], high[2]))
+            }
+        }
+        return EarthGLBInfo.Geometry(
+            vertexCount: estimate.vertexCount,
+            triangleCount: estimate.indexCount / 3,
+            meshCount: meshes.count,
+            materialCount: (document["materials"] as? [Any])?.count ?? 0,
+            textureCount: (document["textures"] as? [Any])?.count ?? 0,
+            minimum: [minimum.x, minimum.y, minimum.z],
+            maximum: [maximum.x, maximum.y, maximum.z]
+        )
+    }
 }
 
 struct EarthGLBExportModel: Sendable
@@ -145,6 +177,29 @@ public actor EarthGLBExporter
         progress: @escaping @Sendable (EarthGLBExportProgress) -> Void = { _ in }
     ) async throws -> URL
     {
+        try await deliver(plan: plan, fileURL: fileURL, writesInfo: false, preview: nil, progress: progress).fileURL
+    }
+
+    /// Publishes a normal GLB first. Companion/preview failures are returned as
+    /// warnings and never remove a successfully published model.
+    public func exportWithInfo(
+        plan: EarthGLBExportPlan,
+        fileURL: URL,
+        preview: EarthGLBExportPreview? = nil,
+        progress: @escaping @Sendable (EarthGLBExportProgress) -> Void = { _ in }
+    ) async throws -> EarthGLBExportDelivery
+    {
+        try await deliver(plan: plan, fileURL: fileURL, writesInfo: true, preview: preview, progress: progress)
+    }
+
+    private func deliver(
+        plan: EarthGLBExportPlan,
+        fileURL: URL,
+        writesInfo: Bool,
+        preview: EarthGLBExportPreview?,
+        progress: @escaping @Sendable (EarthGLBExportProgress) -> Void
+    ) async throws -> EarthGLBExportDelivery
+    {
         guard !isWorking else { throw EarthCaptureError.alreadyCapturing }
         isWorking = true
         defer { isWorking = false }
@@ -177,9 +232,14 @@ public actor EarthGLBExporter
         {
             let output = try FileHandle(forWritingTo: staging)
             defer { try? output.close() }
-            try EarthCombinedGLB.writeWords([0x46546C67, 2, UInt32(total), UInt32(json.count), 0x4E4F534A], to: output)
+            var digest = SHA256()
+            let observe: ((Data) -> Void)? = writesInfo ? { digest.update(data: $0) } : nil
+            var activePreview = preview
+            var infoWarning: String?
+            try EarthCombinedGLB.writeWords([0x46546C67, 2, UInt32(total), UInt32(json.count), 0x4E4F534A], to: output, observe: observe)
             try output.write(contentsOf: json)
-            try EarthCombinedGLB.writeWords([UInt32(plan.binaryByteCount), 0x004E4942], to: output)
+            observe?(json)
+            try EarthCombinedGLB.writeWords([UInt32(plan.binaryByteCount), 0x004E4942], to: output, observe: observe)
             let binaryStart = try output.offset()
             var lastProgress = ContinuousClock.now
             for (ordinal, model) in plan.models.enumerated()
@@ -187,7 +247,13 @@ public actor EarthGLBExporter
                 try Task.checkCancellation()
                 let capture = try await current.importModel(id: model.id)
                 guard Self.fingerprint(capture) == model.fingerprint else { throw EarthGLBExportError.sourceChanged }
-                try autoreleasepool { try EarthCombinedGLB.writeBinary(capture, options: plan.options, to: output) }
+                try autoreleasepool { try EarthCombinedGLB.writeBinary(capture, options: plan.options, to: output, observe: observe) }
+                if let consumer = activePreview
+                {
+                    do { try await consumer.consume(capture) }
+                    catch is CancellationError { throw CancellationError() }
+                    catch { activePreview = nil; infoWarning = "The GLB was exported, but its thumbnail could not be generated." }
+                }
                 if ordinal == 0 || ordinal + 1 == plan.selectedModelCount || lastProgress.duration(to: .now) >= .milliseconds(200)
                 {
                     progress(.init(phase: .writing, completedModels: ordinal + 1, totalModels: plan.selectedModelCount))
@@ -202,7 +268,45 @@ public actor EarthGLBExporter
             // A hard link publishes atomically without overwriting a destination
             // that appeared during the export; staging is in the same directory.
             try FileManager.default.linkItem(at: staging, to: fileURL)
-            return fileURL
+            guard writesInfo else { return EarthGLBExportDelivery(fileURL: fileURL, infoURL: nil, infoWarning: nil) }
+            var thumbnail: EarthGLBInfo.Thumbnail?
+            if let consumer = activePreview
+            {
+                do { thumbnail = try await consumer.finish() }
+                catch { infoWarning = "The GLB was exported, but its thumbnail could not be generated." }
+            }
+            do
+            {
+                guard let document = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+                      let scenes = document["scenes"] as? [[String: Any]], let name = scenes.first?["name"] as? String,
+                      let extras = document["extras"] as? [String: Any], let metadata = extras["messEarthKitCombinedAsset"] as? [String: Any],
+                      let attributions = metadata["attributions"] as? [String]
+                else { throw EarthGLBInfoError.invalidInfo }
+                let info = EarthGLBInfo(
+                    name: name,
+                    fileName: fileURL.lastPathComponent,
+                    byteCount: total,
+                    sha256: digest.finalize().map { String(format: "%02x", $0) }.joined(),
+                    geometry: try plan.informationGeometry(),
+                    options: plan.options,
+                    attributions: attributions,
+                    thumbnail: thumbnail
+                )
+                let infoURL = EarthGLBInfo.companionURL(fileURL)
+                let temporary = staging.appendingPathExtension("info.json")
+                defer { try? FileManager.default.removeItem(at: temporary) }
+                try info.encoded().write(to: temporary, options: .atomic)
+                try FileManager.default.linkItem(at: temporary, to: infoURL)
+                return EarthGLBExportDelivery(fileURL: fileURL, infoURL: infoURL, infoWarning: infoWarning)
+            }
+            catch
+            {
+                return EarthGLBExportDelivery(
+                    fileURL: fileURL,
+                    infoURL: nil,
+                    infoWarning: "The GLB was exported, but its information companion could not be saved."
+                )
+            }
         }
         catch is CancellationError { throw CancellationError() }
         catch let error as EarthGLBExportError { throw error }

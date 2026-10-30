@@ -27,7 +27,7 @@ let package = Package(
             dependencies: ["MessEarthKit"],
             path: "MessEarthKit/MessEarthKit",
             exclude: ["Assets.xcassets", "Presentation", "Rendering/EarthPreviewView.swift", "Services", "MessEarthKitApp.swift"],
-            sources: ["Storage", "Workflow", "Rendering/EarthPreviewResources.swift", "Rendering/EarthPreviewSceneBuilder.swift", "Rendering/EarthRegionPreviewLoader.swift", "Rendering/EarthPreviewRenderer.swift"],
+            sources: ["Storage", "Workflow", "Rendering/EarthPreviewResources.swift", "Rendering/EarthPreviewSceneBuilder.swift", "Rendering/EarthRegionPreviewLoader.swift", "Rendering/EarthPreviewRenderer.swift", "Rendering/EarthGLBThumbnailRenderer.swift"],
             resources: [.copy("Rendering/EarthPreviewShaders.metal")]
         ),
         .executableTarget(

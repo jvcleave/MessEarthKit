@@ -16,6 +16,9 @@ struct EarthPreviewBounds: Sendable
         maximum = bounds.maximum
     }
 
+    init(minimum: SIMD3<Float>, maximum: SIMD3<Float>)
+    { self.minimum = minimum; self.maximum = maximum }
+
     mutating func include(_ other: Self)
     {
         minimum = simd_min(minimum, other.minimum)
@@ -33,12 +36,12 @@ struct EarthPreviewMaterial: Sendable
     let alphaMode: EarthAlphaMode
     let alphaCutoff: Float
 
-    init(_ material: EarthMaterial)
+    init(_ material: EarthMaterial, includesMaterials: Bool = true)
     {
-        baseColor = material.baseColor
-        isUnlit = material.isUnlit
-        isDoubleSided = material.isDoubleSided
-        alphaMode = material.alphaMode
+        baseColor = includesMaterials ? material.baseColor : SIMD4(repeating: 1)
+        isUnlit = includesMaterials && material.isUnlit
+        isDoubleSided = includesMaterials && material.isDoubleSided
+        alphaMode = includesMaterials ? material.alphaMode : .opaque
         alphaCutoff = material.alphaCutoff
     }
 }

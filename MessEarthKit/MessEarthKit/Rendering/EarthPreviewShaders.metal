@@ -41,7 +41,8 @@ fragment float4 earthPreviewFragment(
     sampler imageSampler [[sampler(0)]]
 )
 {
-    float4 color = image.sample(imageSampler, input.textureCoordinate) * surface.baseColor * input.color;
+    float4 color = image.sample(imageSampler, input.textureCoordinate) * surface.baseColor
+        * (surface.options.w > 0.5 ? float4(1.0) : input.color);
     if (surface.options.y >= 0 && color.a < surface.options.y) { discard_fragment(); }
     if (surface.options.z > 0.5) { color.a = 1; }
     if (surface.options.x < 0.5)

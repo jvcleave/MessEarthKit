@@ -239,20 +239,22 @@ final class EarthCombinedGLB
     static func aligned(_ count: Int) throws -> Int
     { try EarthCaptureGeometryEstimate.sum(count, (4 - count % 4) % 4) }
 
-    static func writeWords(_ words: [UInt32], to output: FileHandle) throws
+    static func writeWords(_ words: [UInt32], to output: FileHandle, observe: ((Data) -> Void)? = nil) throws
     {
         var data = Data(capacity: words.count * 4)
         for var word in words.map(\.littleEndian) { withUnsafeBytes(of: &word) { data.append(contentsOf: $0) } }
         try output.write(contentsOf: data)
+        observe?(data)
     }
 
-    static func writeBinary(_ capture: EarthCapture, options: EarthGLBExportOptions, to output: FileHandle) throws
+    static func writeBinary(_ capture: EarthCapture, options: EarthGLBExportOptions, to output: FileHandle, observe: ((Data) -> Void)? = nil) throws
     {
         var data = Data(capacity: 65584)
         func flush() throws
         {
             try Task.checkCancellation()
             try output.write(contentsOf: data)
+            observe?(data)
             data.removeAll(keepingCapacity: true)
         }
         func word(_ value: UInt32)
@@ -287,10 +289,17 @@ final class EarthCombinedGLB
             for offset in stride(from: 0, to: image.encodedImage.count, by: 1024 * 1024)
             {
                 try Task.checkCancellation()
-                try output.write(contentsOf: image.encodedImage.subdata(in: offset ..< min(image.encodedImage.count, offset + 1024 * 1024)))
+                let bytes = image.encodedImage.subdata(in: offset ..< min(image.encodedImage.count, offset + 1024 * 1024))
+                try output.write(contentsOf: bytes)
+                observe?(bytes)
             }
             let padding = (4 - image.encodedImage.count % 4) % 4
-            if padding > 0 { try output.write(contentsOf: Data(repeating: 0, count: padding)) }
+            if padding > 0
+            {
+                let bytes = Data(repeating: 0, count: padding)
+                try output.write(contentsOf: bytes)
+                observe?(bytes)
+            }
         }
     }
 }

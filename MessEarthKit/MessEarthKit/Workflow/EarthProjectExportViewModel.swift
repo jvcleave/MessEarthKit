@@ -122,7 +122,7 @@ final class EarthProjectExportViewModel
             {
                 try await saveEdits()
                 try Task.checkCancellation()
-                _ = try await service.export(variantID: variantID, options: requestedOptions)
+                let result = try await service.export(variantID: variantID, options: requestedOptions)
                 { [weak self] progress in
                     Task
                     { @MainActor [weak self] in
@@ -141,7 +141,7 @@ final class EarthProjectExportViewModel
                 }
                 guard let self else { return }
                 // A completed publication is durable even after a simultaneous Cancel.
-                status = "Exported \(requestedPreset.lowercased()) GLB"
+                status = result.infoWarning ?? "Exported \(requestedPreset.lowercased()) GLB"
                 do { history = try await service.exports(); historyError = nil }
                 catch { historyError = error.localizedDescription }
             }

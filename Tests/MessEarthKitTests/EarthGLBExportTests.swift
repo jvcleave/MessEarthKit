@@ -1,7 +1,70 @@
+import CryptoKit
 import Foundation
 @testable import MessEarthKit
 import simd
 import Testing
+
+// Companion identity describes the bytes actually written, and does not change
+// the standard GLB. Counts/bounds describe the selected export and channels.
+@Test(arguments: [EarthGLBExportOptions.full, .minimal])
+func combinedGLBInfoBindsTheExactStandaloneAsset(options: EarthGLBExportOptions) async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 2)
+    let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
+    let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    let exporter = EarthGLBExporter()
+    let plan = try await exporter.preflight(collection: collection, destination: profile, options: options)
+    let plain = try await exporter.export(plan: plan, fileURL: parent.appendingPathComponent("plain.glb"))
+    #expect(!FileManager.default.fileExists(atPath: EarthGLBInfo.companionURL(plain).path))
+    let sample = try await collection.importModel(id: 1)
+    let image = try #require(sample.materials.compactMap(\.baseColorTexture).first)
+    let thumbnail = try EarthGLBInfo.Thumbnail(width: image.width, height: image.height, pngData: image.encodedImage)
+    let preview = options.includeTextures ? EarthGLBExportPreview(consume: { _ in }, finish: { thumbnail }) : nil
+    let result = try await exporter.exportWithInfo(plan: plan, fileURL: parent.appendingPathComponent("with-info.glb"), preview: preview)
+    let bytes = try Data(contentsOf: result.fileURL)
+    #expect(bytes == (try Data(contentsOf: plain)))
+    let info = try EarthGLBInfo.decode(Data(contentsOf: #require(result.infoURL)))
+    #expect(info.thumbnail?.data == (options.includeTextures ? thumbnail.data : nil))
+    #expect(info.glb.byteCount == bytes.count && info.glb.sha256 == SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
+    #expect(info.geometry.triangleCount == 28 && info.geometry.meshCount == 4)
+    let imported = try await EarthCaptureImporter().importFile(fileURL: result.fileURL)
+    #expect(info.geometry.minimum == [imported.bounds.minimum.x, imported.bounds.minimum.y, imported.bounds.minimum.z])
+    #expect(info.geometry.maximum == [imported.bounds.maximum.x, imported.bounds.maximum.y, imported.bounds.maximum.z])
+    #expect(info.exportOptions == options && (info.geometry.textureCount > 0) == options.includeTextures)
+    #expect((info.geometry.materialCount > 0) == options.includeMaterials)
+    var json = try #require(JSONSerialization.jsonObject(with: info.encoded()) as? [String: Any])
+    json["schemaVersion"] = 99
+    #expect(throws: EarthGLBInfoError.self) { try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: json)) }
+}
+
+@Test(arguments: [false, true])
+func combinedGLBInfoFailurePreservesPublishedGeometry(blocksCompanion: Bool) async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 1)
+    let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: EarthPreparationProfile())
+    let exporter = EarthGLBExporter()
+    let plan = try await exporter.preflight(collection: collection, destination: EarthPreparationProfile())
+    let target = parent.appendingPathComponent("model.glb")
+    let sentinel = Data("retain existing companion".utf8)
+    if blocksCompanion { try sentinel.write(to: EarthGLBInfo.companionURL(target)) }
+    let preview = EarthGLBExportPreview(consume: { _ in throw EarthGLBInfoError.invalidInfo }, finish: { throw EarthGLBInfoError.invalidInfo })
+    let result = try await exporter.exportWithInfo(plan: plan, fileURL: target, preview: preview)
+    #expect(result.infoWarning != nil)
+    #expect(try await EarthCaptureImporter().importFile(fileURL: result.fileURL).triangleCount == 14)
+    if blocksCompanion
+    {
+        let retained = try Data(contentsOf: EarthGLBInfo.companionURL(target))
+        #expect(result.infoURL == nil && retained == sentinel)
+    }
+    else
+    {
+        #expect(try EarthGLBInfo.decode(Data(contentsOf: #require(result.infoURL))).thumbnail == nil)
+    }
+}
 
 // Reuse the independent authored/Draco fixtures and triangle/material comparer.
 // Distinct risks: local placement, baked reflections/UVs/colors, generated

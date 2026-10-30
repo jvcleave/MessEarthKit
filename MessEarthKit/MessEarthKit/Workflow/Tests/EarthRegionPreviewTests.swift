@@ -4,6 +4,28 @@ import Metal
 import simd
 import Testing
 
+// A later part must add pixels to the retained depth/color image without
+// requiring a whole-region GPU scene or changing its shared camera bounds.
+@Test private func exportThumbnailComposesPartsIntoOneSmallPNG() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let fixture = try await regionPreviewFixture(root: root)
+    let options = EarthGLBExportOptions.minimal
+    let plan = try await EarthGLBExporter().preflight(collection: fixture.collection, destination: EarthPreparationProfile(), options: options)
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let source = try String(contentsOf: #require(Bundle.module.url(forResource: "EarthPreviewShaders", withExtension: "metal")), encoding: .utf8)
+    let library = try await device.makeLibrary(source: source, options: nil)
+    let renderer = try EarthGLBThumbnailRenderer(geometry: plan.informationGeometry(), options: options, library: library)
+    let models = try await fixture.collection.models()
+    let first = try #require(models.first)
+    try await renderer.consume(fixture.collection.importModel(id: first.id))
+    let initial = try await renderer.finish()
+    for model in models.dropFirst() { try await renderer.consume(fixture.collection.importModel(id: model.id)) }
+    let complete = try await renderer.finish()
+    #expect(complete.width == 256 && complete.height == 256 && complete.data != initial.data)
+}
+
 private func regionPreviewFixture(root: URL, origin: EarthGeographicOrigin? = nil) async throws -> (files: EarthAppFiles, store: EarthProjectStore, record: EarthProjectRecord, collection: EarthPreparedCollection)
 {
     let files = try EarthAppFiles(storageRootURL: root)

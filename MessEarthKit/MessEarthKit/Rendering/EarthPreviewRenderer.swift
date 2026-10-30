@@ -111,10 +111,19 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
               let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: descriptor)
         else { return }
-        let center = scene.bounds.center
         let aspect = Float(view.drawableSize.width / view.drawableSize.height)
-        let distance = Self.fittingDistance(bounds: scene.bounds, aspect: aspect) * snapshot.3
-        let eye = center + SIMD3(cos(snapshot.2) * sin(snapshot.1), sin(snapshot.2), cos(snapshot.2) * cos(snapshot.1)) * distance
+        let camera = Self.cameraFrame(bounds: scene.bounds, aspect: aspect, yaw: snapshot.1, pitch: snapshot.2, zoomScale: snapshot.3)
+        encode(scene: scene, viewProjection: camera.viewProjection, eye: camera.eye, encoder: encoder)
+        encoder.endEncoding()
+        command.present(drawable)
+        command.commit()
+    }
+
+    static func cameraFrame(bounds: EarthPreviewBounds, aspect: Float, yaw: Float = .pi / 5, pitch: Float = .pi / 4, zoomScale: Float = 1) -> (viewProjection: simd_float4x4, eye: SIMD3<Float>)
+    {
+        let center = bounds.center
+        let distance = Self.fittingDistance(bounds: bounds, aspect: aspect) * zoomScale
+        let eye = center + SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw)) * distance
         let back = simd_normalize(eye - center)
         let right = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), back))
         let up = simd_cross(back, right)
@@ -125,18 +134,15 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             SIMD4(-simd_dot(right, eye), -simd_dot(up, eye), -simd_dot(back, eye), 1)
         ))
         let near = max(0.001, distance / 1000)
-        let far = max(near + 1, distance + simd_length(scene.bounds.dimensions) * 10)
+        let far = max(near + 1, distance + simd_length(bounds.dimensions) * 10)
         let verticalScale = 1 / tan(Float.pi / 8)
-        let horizontalScale = verticalScale / Float(view.drawableSize.width / view.drawableSize.height)
+        let horizontalScale = verticalScale / aspect
         let projection = simd_float4x4(columns: (SIMD4(horizontalScale, 0, 0, 0), SIMD4(0, verticalScale, 0, 0), SIMD4(0, 0, far / (near - far), -1), SIMD4(0, 0, near * far / (near - far), 0)))
-        encode(scene: scene, viewProjection: projection * camera, eye: eye, encoder: encoder)
-        encoder.endEncoding()
-        command.present(drawable)
-        command.commit()
+        return (projection * camera, eye)
     }
 
     /// Encodes immutable resources into the caller's render pass.
-    func encode(scene: EarthPreparedPreview, viewProjection: simd_float4x4, eye: SIMD3<Float>, encoder: MTLRenderCommandEncoder)
+    func encode(scene: EarthPreparedPreview, viewProjection: simd_float4x4, eye: SIMD3<Float>, encoder: MTLRenderCommandEncoder, includesVertexColors: Bool = true)
     {
         var viewProjection = viewProjection
         let textured = scene.displayMode.usesTextures
@@ -157,7 +163,7 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
             encoder.setCullMode(textured && !material.isDoubleSided ? .back : .none)
             encoder.setDepthStencilState(textured && material.alphaMode == .blend ? blendedDepth : opaqueDepth)
             var surface = textured
-                ? SurfaceUniforms(baseColor: material.baseColor, options: SIMD4(material.isUnlit ? 1 : 0, material.alphaMode == .mask ? material.alphaCutoff : -1, material.alphaMode != .blend ? 1 : 0, 0))
+                ? SurfaceUniforms(baseColor: material.baseColor, options: SIMD4(material.isUnlit ? 1 : 0, material.alphaMode == .mask ? material.alphaCutoff : -1, material.alphaMode != .blend ? 1 : 0, includesVertexColors ? 0 : 1))
                 : SurfaceUniforms(baseColor: SIMD4(0.72, 0.78, 0.84, 1), options: SIMD4(0, -1, 1, wireframe ? 1 : 0))
             encoder.setVertexBuffer(mesh.vertices, offset: 0, index: 0)
             encoder.setFragmentBytes(&surface, length: MemoryLayout<SurfaceUniforms>.stride, index: 0)

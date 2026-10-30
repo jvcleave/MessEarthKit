@@ -117,6 +117,11 @@ Exports are saved in the project's `output/<export UUID>/` folder. **Export
 Again** creates another file and keeps earlier exports in the history. Export
 does not require the whole capture to fit in Preview.
 
+New app exports also include an optional `.glb.info.json` companion with model
+statistics, attribution and a small PNG thumbnail. Keep it beside the GLB for
+consumers that support it. The GLB works independently. See the
+[companion format](docs/GLB_INFO.md) for SDK export and reader details.
+
 Export choices leave downloaded and prepared sources intact. Omitting images
 from an export does not reduce the Google tiles already downloaded.
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Add optional `.glb.info.json` delivery with statistics, export settings,
+  attribution, size/SHA-256 matching and a bounded PNG from the example app.
+
 ## 1.0.0 — 2026-10-29
 
 Initial 1.0 release of the MessEarthKit Swift package and macOS example app.
