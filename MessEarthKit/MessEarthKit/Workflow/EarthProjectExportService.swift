@@ -106,7 +106,7 @@ actor EarthProjectExportService
               current.locations.first(where: { $0.id == source.location.id })?.name == source.location.name
         else { throw EarthGLBExportError.sourceChanged }
         guard plan.canExport else { throw EarthGLBExportError.requirements(plan.issues) }
-        let output = try await files.newGLBExportDestination(projectID: projectID, name: identity.locationName, detail: source.variant.detail, includeTextures: options.includeTextures)
+        let output = try await files.newGLBExportDestination(projectID: projectID, name: identity.locationName, detail: source.variant.detail, options: plan.options)
         let fileURL: URL
         var infoWarning: String?
         do

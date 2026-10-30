@@ -92,7 +92,14 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     let target = try await files.exportFileURL(projectID: project.id, record: saved)
     #expect(item.fileIsAvailable && saved.source == capture && saved.includeTextures == options.includeTextures)
     #expect(export.exports(for: otherID).isEmpty)
-    let suffix = options.includeTextures ? "" : "_Geometry"
+    let suffix: String
+    switch choice
+    {
+        case .full: suffix = "_geom_norm_vcol_uv_mat_tex"
+        case .untextured: suffix = "_geom_norm_vcol_uv_mat"
+        case .minimal: suffix = "_geom"
+        case .custom: suffix = "_geom_uv_mat_tex"
+    }
     #expect(target.lastPathComponent == "Chicago_Downtown_41.87811_-87.62981_Standard\(suffix).glb")
     let info = try EarthGLBInfo.decode(Data(contentsOf: EarthGLBInfo.companionURL(target)))
     #expect(info.name == edit.title && info.geometry.triangleCount == 42 && info.exportOptions == options)

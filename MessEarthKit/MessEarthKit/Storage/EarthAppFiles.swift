@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import MessEarthKit
 
 enum EarthAppFilesError: Error, Equatable, LocalizedError, Sendable
 {
@@ -237,18 +238,24 @@ actor EarthAppFiles
     }
 
     /// Each export owns a fresh output folder; SDK publication creates the file.
-    func newGLBExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, includeTextures: Bool) throws -> EarthProjectExportDestination
+    func newGLBExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, options: EarthGLBExportOptions) throws -> EarthProjectExportDestination
     {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
         var stem = name.components(separatedBy: allowed.inverted).filter { !$0.isEmpty }.joined(separator: "_")
             .trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
         while stem.utf8.count > 200 { stem.removeLast() }
         guard !stem.isEmpty else { throw EarthLocationNamingError.invalidName }
-        let suffix = includeTextures ? "" : "_Geometry"
+        var contents = ["geom"]
+        if options.includeNormals { contents.append("norm") }
+        if options.includeVertexColors { contents.append("vcol") }
+        if options.includeTextureCoordinates { contents.append("uv") }
+        if options.includeMaterials { contents.append("mat") }
+        if options.includeTextures { contents.append("tex") }
+        let suffix = contents.joined(separator: "_")
         let directory = try newArtifactDirectory(projectID: projectID, kind: .output)
         try ensureManagedDirectory(directory)
         guard let id = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
-        return .init(id: id, fileURL: directory.appendingPathComponent("\(stem)_\(detail.title)\(suffix).glb"))
+        return .init(id: id, fileURL: directory.appendingPathComponent("\(stem)_\(detail.title)_\(suffix).glb"))
     }
 
     func exportFileURL(projectID: UUID, record: EarthProjectExportRecord) throws -> URL

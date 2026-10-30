@@ -4,6 +4,8 @@
 
 - Add optional `.glb.info.json` delivery with statistics, export settings,
   attribution, size/SHA-256 matching and a bounded PNG from the example app.
+- Include selected GLB contents in app export filenames using `geom`, `norm`,
+  `vcol`, `uv`, `mat` and `tex` tags.
 
 ## 1.0.0 — 2026-10-29
 

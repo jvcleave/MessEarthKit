@@ -113,6 +113,12 @@ Normals, vertex colors, UV coordinates, materials and texture images can also be
 selected individually. Enabling textures enables UVs and materials. Placement,
 capture identity and attribution are always retained.
 
+Filenames include the selected contents. For example,
+`Chicago_Standard_geom_norm_vcol_uv_mat_tex.glb` contains geometry (`geom`,
+positions and triangle indices), normals (`norm`), vertex colors (`vcol`), UVs,
+materials (`mat`) and texture images (`tex`). Omitted channels have no tag;
+Minimal ends in `_geom.glb`.
+
 Exports are saved in the project's `output/<export UUID>/` folder. **Export
 Again** creates another file and keeps earlier exports in the history. Export
 does not require the whole capture to fit in Preview.
