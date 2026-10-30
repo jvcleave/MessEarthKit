@@ -98,6 +98,46 @@ public actor EarthGLBExporter
 
     public init() {}
 
+    /// Reads the recorded output choices without decoding geometry or reading
+    /// the binary payload. JSON is bounded to 16 MiB. A GLB without recorded
+    /// choices returns nil; malformed metadata fails explicitly. The caller
+    /// owns file authorization. This is metadata inspection, not asset validation.
+    public func exportedOptions(fileURL: URL) throws -> EarthGLBExportOptions?
+    {
+        do
+        {
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            let header = try input.read(upToCount: 20) ?? Data()
+            guard header.count == 20 else { throw EarthImportError.invalidContent("The exported GLB header is incomplete.") }
+            let words = header.withUnsafeBytes
+            { bytes in (0 ..< 5).map { UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self)) } }
+            let fileLength = try input.seekToEnd()
+            let jsonLength = Int(words[3])
+            guard fileLength >= 20, words[0] == 0x46546C67, words[1] == 2, UInt64(words[2]) == fileLength,
+                  words[4] == 0x4E4F534A, jsonLength > 0, jsonLength <= 16 * 1024 * 1024,
+                  jsonLength.isMultiple(of: 4), UInt64(jsonLength) <= fileLength - 20
+            else { throw EarthImportError.invalidContent("The exported GLB header or JSON length is invalid.") }
+            try input.seek(toOffset: 20)
+            let json = try input.read(upToCount: jsonLength) ?? Data()
+            guard json.count == jsonLength,
+                  let document = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+                  (document["asset"] as? [String: Any])?["version"] as? String == "2.0"
+            else { throw EarthImportError.invalidContent("The exported GLB JSON is invalid.") }
+            guard let rawExtras = document["extras"] else { return nil }
+            guard let extras = rawExtras as? [String: Any]
+            else { throw EarthImportError.invalidContent("The exported GLB metadata is invalid.") }
+            guard let value = extras["messEarthKitExportOptions"] else { return nil }
+            guard let fields = value as? [String: Any]
+            else { throw EarthImportError.invalidContent("The exported GLB choices are invalid.") }
+            let options = try JSONDecoder().decode(EarthGLBExportOptions.self, from: JSONSerialization.data(withJSONObject: fields))
+            try options.validate()
+            return options
+        }
+        catch let error as EarthImportError { throw error }
+        catch { throw EarthImportError.invalidContent("The exported GLB choices could not be read.") }
+    }
+
     /// Options select the exported vertex attributes, materials and images.
     /// Source model loading retains its original limits and data. Texture export
     /// requires UV coordinates and materials; inconsistent options fail explicitly.

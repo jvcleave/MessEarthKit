@@ -48,8 +48,11 @@ struct EarthProjectDetailView: View
                         onSubmit: { library.updateMap(project.id) }
                     )
                 }
-                Button("Update Map") { library.updateMap(project.id) }.disabled(!library.canStartWork)
-                Button("Add Location", action: project.addLocation).disabled(!library.canStartWork || project.mapCenter == nil)
+                HStack
+                {
+                    Button("Update Map") { library.updateMap(project.id) }.disabled(!library.canStartWork)
+                    Button("Add Location", action: project.addLocation).disabled(!library.canStartWork || project.mapCenter == nil)
+                }
                 Text("Searching and browsing move the map. Add Location creates a capture area there.")
                     .font(.caption).foregroundStyle(.secondary)
             }

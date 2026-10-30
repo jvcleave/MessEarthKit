@@ -91,6 +91,7 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     let saved = item.record
     let target = try await files.exportFileURL(projectID: project.id, record: saved)
     #expect(item.fileIsAvailable && saved.source == capture && saved.includeTextures == options.includeTextures)
+    #expect(item.exportedOptions == options && item.contentsError == nil)
     #expect(export.exports(for: otherID).isEmpty)
     let suffix: String
     switch choice
@@ -175,6 +176,12 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     try await settleExport(restored)
     #expect(restored.history.count == 3 && restored.history.first { $0.id == initial.output.id }?.fileIsAvailable == false)
     #expect(restored.history.filter(\.fileIsAvailable).count == 2)
+    try Data([0]).write(to: again.fileURL)
+    restored.reloadHistory()
+    try await settleExport(restored)
+    let damaged = try #require(restored.history.first { $0.id == again.output.id })
+    #expect(restored.historyError == nil && damaged.contentsError != nil && damaged.exportedOptions == nil)
+    #expect(restored.history.first { $0.id == other.output.id }?.exportedOptions == .untextured)
 }
 
 private enum ExportHistoryCorruption: CaseIterable, Sendable { case malformed, version, project }
@@ -318,7 +325,9 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     #expect(try Data(contentsOf: withoutCompanionURL) == bytes)
     #expect(!FileManager.default.fileExists(atPath: EarthGLBInfo.companionURL(withoutCompanionURL).path))
     let reopened = projectExportService(files: files, store: EarthProjectStore(files: files), projectID: project.id)
-    #expect(try await reopened.exports().map(\.record) == [withoutCompanion])
+    let reopenedItems = try await reopened.exports()
+    #expect(reopenedItems.map(\.record) == [withoutCompanion])
+    #expect(reopenedItems.first?.exportedOptions == .untextured && reopenedItems.first?.contentsError == nil)
     #expect(try await store.record(id: project.id) == before)
 }
 

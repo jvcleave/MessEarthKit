@@ -69,18 +69,14 @@ struct EarthProjectExportControls: View
                 if let record = export.unrecordedExport
                 { Button("Show Unrecorded File in Finder") { export.reveal(record) } }
             }
-            ForEach(Array(exports.enumerated()), id: \.element.id)
-            { index, item in
+            ForEach(exports)
+            { item in
                 VStack(alignment: .leading, spacing: 4)
                 {
-                    HStack
-                    {
-                        Text("Export \(exports.count - index) · \(item.record.includeTextures ? "With textures" : "Without textures")").font(.caption)
-                        Spacer()
-                        if item.fileIsAvailable
-                        { Button("Show Export in Finder") { export.reveal(item.record) } }
-                        else { Text("File unavailable").font(.caption).foregroundStyle(.secondary) }
-                    }
+                    Text(item.contentsSummary).font(.caption).fixedSize(horizontal: false, vertical: true)
+                    if !item.fileIsAvailable { Text("File unavailable").font(.caption).foregroundStyle(.secondary) }
+                    if let error = item.contentsError
+                    { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
                     Text(item.record.fileName).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack
                     {
@@ -91,7 +87,11 @@ struct EarthProjectExportControls: View
                         }.disabled(!item.fileIsAvailable || !canStartWork || export.isLoadingHistory)
                         Button("Delete…", role: .destructive) { requestedAction = .delete(item.record) }
                             .disabled(!canStartWork || export.isLoadingHistory)
+                        if item.fileIsAvailable
+                        { Button("Show in Finder") { export.reveal(item.record) } }
                     }
+                    .controlSize(.small)
+                    .lineLimit(1)
                 }
             }
             if let error = export.managementError

@@ -158,10 +158,10 @@ enum EarthProjectStoreError: Error, Equatable, LocalizedError, Sendable
             case .invalidRecord: "The project file is invalid or does not match its folder."
             case .sourceMismatch: "The project's saved capture or prepared models do not match their recorded source."
             case .locationNotFound: "This location is no longer available. Refresh the project and try again."
-            case .frozenLocation: "This location's capture area is frozen. Use Adjust Area before any capture completes, or Copy Location."
+            case .frozenLocation: "This location's capture area is frozen. Use Adjust Area before any capture completes, or Duplicate."
             case .changedLocation: "The location or its variants changed. Review the location and try again."
             case .captureNotFound: "This capture variant is no longer available in the project. Refresh the project and try again."
-            case .capturedLocation: "The capture area is fixed after a variant finishes downloading. Use Copy Location for a different area."
+            case .capturedLocation: "The capture area is fixed after a variant finishes downloading. Use Duplicate for a different area."
             case .lockedVariantDetail: "Detail is fixed once a variant starts downloading. Add another variant to choose a different detail."
         }
     }

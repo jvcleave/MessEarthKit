@@ -504,7 +504,13 @@ from history. Both actions leave the variant's source and prepared models intact
 See [storage lifetimes and failure handling](APP_STORAGE.md#source-preparation-and-export-lifetimes).
 
 Export history retains its schema and texture flag; detailed channel choices
-are stored in each new GLB.
+are stored in each new GLB. Each history entry lists its recorded geometry,
+normals, vertex colors, UV coordinates, materials and textures. The app reads
+those choices from the GLB's bounded JSON header through
+`EarthGLBExporter.exportedOptions(fileURL:)`, without decoding geometry or relying
+on its filename or the current preset. Missing files or absent choices display
+unavailable contents; malformed output metadata reports a per-file error without
+discarding history. The optional information companion is not required.
 
 ### Preview ownership
 

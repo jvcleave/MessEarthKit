@@ -154,7 +154,20 @@ actor EarthProjectExportService
         for record in records
         {
             let available = try await files.exportFileIsAvailable(projectID: projectID, record: record)
-            items.append(.init(record: record, fileIsAvailable: available))
+            var options: EarthGLBExportOptions?
+            var contentsError: String?
+            if available
+            {
+                do
+                {
+                    let url = try await files.exportFileURL(projectID: projectID, record: record)
+                    let access = try await files.accessForReading(url)
+                    defer { withExtendedLifetime(access) {} }
+                    options = try await exporter.exportedOptions(fileURL: url)
+                }
+                catch { contentsError = error.localizedDescription }
+            }
+            items.append(.init(record: record, fileIsAvailable: available, exportedOptions: options, contentsError: contentsError))
         }
         return items.sorted
         {

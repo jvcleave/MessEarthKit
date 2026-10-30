@@ -18,7 +18,7 @@ struct EarthProjectCapturesView: View
                     Text(project.areaAdjustment?.locationID == location.id ? "Editing area" : location.isFrozen ? "Frozen area" : "Draft area").font(.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Show on Map") { project.showLocation(location.id) }.disabled(!library.canStartWork)
-                    Button("Copy Location") { project.copyLocation(location.id) }.disabled(!library.canStartWork)
+                    Button("Duplicate") { project.copyLocation(location.id) }.disabled(!library.canStartWork)
                     Button(role: .destructive) { library.requestLocationDeletion(project.id, locationID: location.id) } label: { Image(systemName: "trash") }
                         .buttonStyle(.borderless).help("Delete Location").accessibilityLabel("Delete location \(location.displayTitle)")
                         .disabled(!library.canRequestDeletion || project.isSaving)
@@ -65,9 +65,13 @@ private struct EarthProjectCaptureCard: View
                 Button(archive.sourceRequests == 0 ? "Download" : "Resume Download") { library.download(project.id, captureID: variant.id) }
                     .disabled(project.areaAdjustment != nil || !library.canStartWork || !project.hasAPIKey)
             }
-            Text(project.captureStatus(variant.id)).font(.subheadline)
-            if let summary = project.captureStatuses[variant.id]?.summary
-            { Text(summary).font(.caption).foregroundStyle(.secondary) }
+            HStack(alignment: .firstTextBaseline, spacing: 4)
+            {
+                Text(project.captureStatus(variant.id)).font(.subheadline)
+                if let summary = project.captureStatuses[variant.id]?.summary
+                { Text("· \(summary)").font(.caption).foregroundStyle(.secondary) }
+            }
+            .lineLimit(1)
             if let error = project.captureError(variant.id)
             { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             if project.operationCaptureID == variant.id, project.phase != .idle

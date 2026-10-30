@@ -31,10 +31,6 @@ struct EarthLocationEditorView: View
                 Button("Adjust Area") { project.adjustLocationArea(location.id) }
                     .disabled(!project.canAdjustArea(location.id))
             }
-            if location.isFrozen
-            {
-                Text("Use Adjust Area before a variant finishes downloading. Use Copy Location for another area afterward.").font(.caption).foregroundStyle(.secondary)
-            }
             if project.areaAdjustment != nil
             {
                 Text("Move or resize the capture box, then Apply Area to update all pending variants. Earlier download files are retained.")

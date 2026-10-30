@@ -46,7 +46,7 @@ struct EarthProjectMapView: View
                         .lineLimit(1)
                     Text("Requested footprint. Downloaded edge tiles may extend beyond it.").font(.caption).foregroundStyle(.secondary)
                     if location.isFrozen
-                    { Text("Use Adjust Area on an incomplete variant, or Copy Location to capture another area.").font(.caption).foregroundStyle(.secondary) }
+                    { Text("Use Adjust Area on an incomplete variant, or Duplicate to capture another area.").font(.caption).foregroundStyle(.secondary) }
                 }
                 else
                 { Text("Search an address or browse the map, then choose Add Location.").font(.callout).foregroundStyle(.secondary) }

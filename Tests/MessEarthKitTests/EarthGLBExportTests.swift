@@ -369,3 +369,48 @@ private func combinedGLBPreflightRejectsDestinationExcessBeforeOutput(budget: Co
     let capture = try await EarthCaptureImporter().importFile(fileURL: target)
     #expect(capture.incompleteReason == issue && capture.triangleCount == 14)
 }
+
+private enum ExportedOptionsCase: CaseIterable, Sendable
+{
+    case sparsePayload, absentOptions, scalarOptions, inconsistentOptions, oversizedJSON, invalidJSON
+}
+
+// Inspect only bounded JSON, including when the binary payload is large. Missing
+// choices are distinct from malformed choices and hostile declared JSON sizes.
+@Test(arguments: ExportedOptionsCase.allCases)
+private func exportedOptionsReadsBoundedMetadata(scenario: ExportedOptionsCase) async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let url = parent.appendingPathComponent("metadata.glb")
+    var document: [String: Any] = ["asset": ["version": "2.0"]]
+    if scenario != .absentOptions
+    {
+        var options = EarthGLBExportOptions.minimal
+        if scenario == .inconsistentOptions { options.includeTextures = true }
+        let fields: Any = scenario == .scalarOptions ? true : try JSONSerialization.jsonObject(with: JSONEncoder().encode(options))
+        document["extras"] = ["messEarthKitExportOptions": fields]
+    }
+    var json = scenario == .invalidJSON ? Data("nope".utf8) : try JSONSerialization.data(withJSONObject: document)
+    while !json.count.isMultiple(of: 4) { json.append(32) }
+    let jsonLength = scenario == .oversizedJSON ? 16 * 1024 * 1024 + 4 : json.count
+    let binaryLength = scenario == .sparsePayload ? 512 * 1024 * 1024 : 0
+    let length = 20 + jsonLength + (binaryLength > 0 ? 8 + binaryLength : 0)
+    var header = Data()
+    for word in [UInt32(0x46546C67), 2, UInt32(length), UInt32(jsonLength), 0x4E4F534A]
+    {
+        var little = word.littleEndian
+        withUnsafeBytes(of: &little) { header.append(contentsOf: $0) }
+    }
+    try (header + json).write(to: url)
+    let output = try FileHandle(forWritingTo: url)
+    try output.truncate(atOffset: UInt64(length))
+    try output.close()
+    let exporter = EarthGLBExporter()
+    switch scenario
+    {
+        case .sparsePayload: #expect(try await exporter.exportedOptions(fileURL: url) == .minimal)
+        case .absentOptions: #expect(try await exporter.exportedOptions(fileURL: url) == nil)
+        default: await #expect(throws: EarthImportError.self) { try await exporter.exportedOptions(fileURL: url) }
+    }
+}

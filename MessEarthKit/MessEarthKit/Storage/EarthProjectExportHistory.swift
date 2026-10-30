@@ -44,7 +44,21 @@ struct EarthProjectExportItem: Identifiable, Sendable
 {
     let record: EarthProjectExportRecord
     let fileIsAvailable: Bool
+    let exportedOptions: EarthGLBExportOptions?
+    let contentsError: String?
     var id: UUID { record.id }
+
+    var contentsSummary: String
+    {
+        guard let options = exportedOptions else { return "Export contents unavailable" }
+        var contents = ["Geometry"]
+        if options.includeNormals { contents.append("Normals") }
+        if options.includeVertexColors { contents.append("Vertex colors") }
+        if options.includeTextureCoordinates { contents.append("UV coordinates") }
+        if options.includeMaterials { contents.append("Materials") }
+        if options.includeTextures { contents.append("Textures") }
+        return contents.joined(separator: " · ")
+    }
 }
 
 /// Independent metadata: no history file exists until the first tracked export.

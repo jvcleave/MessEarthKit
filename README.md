@@ -66,7 +66,7 @@ acquisition for that variant's saved area and detail. Use **Pause Download** and
 
 Add another variant to capture a different detail level. Detail locks once a
 variant starts downloading. **Adjust Area** can update all pending variants
-before any completes; afterward, use **Copy Location** for a different area.
+before any completes; afterward, use **Duplicate** for a different area.
 Whole intersecting tiles can extend beyond the drawn rectangle.
 
 ## Preview
