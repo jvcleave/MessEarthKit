@@ -36,7 +36,7 @@ Initial 1.0 release of the MessEarthKit Swift package and macOS example app.
 - Requires macOS 15.6+ and Swift 6.2+; build the example app with Xcode 26+.
 - Add the `MessEarthKit` library product through SwiftPM using version `1.0.0`.
 - Captured files can be read through `EarthCaptureImporter`; prepared catalogs
-  use `EarthPreparedCollection`. Neither depends on MessScene.
+  use `EarthPreparedCollection`. Both return CPU assets through the public library.
 - Exported GLBs can be consumed by compatible glTF 2.0 apps without EarthKit.
   The consuming app owns file authorization, GPU resources and rendering.
 

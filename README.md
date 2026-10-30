@@ -128,7 +128,7 @@ from an export does not reduce the Google tiles already downloaded.
 | **Completed capture folder** | MessEarthKit's `EarthCaptureImporter` reads `tileset.json`, referenced GLBs and placement transforms. Another compatible 3D Tiles reader can also be used. Keep referenced files together; source GLBs may require Draco decoding. |
 | **Ready prepared collection** | MessEarthKit's `EarthPreparedCollection` opens the catalog and loads aligned model parts. A compatible reader can also use its local `tileset.json`. Preserve the shared placement when combining parts. |
 
-These readers are part of MessEarthKit and can be used without MessScene. See
+These public Swift APIs return CPU assets for your app to convert and render. See
 [SwiftPM](#swiftpm) below for dependency setup and import examples.
 
 For GLB appearance, the consumer should handle embedded PNG/JPEG images, unlit
@@ -230,8 +230,8 @@ separately bounds decoding work; retaining every part still uses their combined
 memory.
 
 Run import and resource preparation on a worker. Sandboxed apps must retain file
-access to the selected folder throughout loading. Local imports need no Google
-key and no MessScene dependency.
+access to the selected folder throughout loading. Local imports run offline and
+need no Google key.
 
 Full capture/preparation/export examples, format contracts and verification
 commands are in the [technical reference](docs/TECHNICAL_REFERENCE.md#package-use).

@@ -280,7 +280,7 @@ New profiles use v2. Existing v1 profiles decode with `.preserveAppearance` and
 cannot declare optimization. The policy survives derivatives, model folders and
 combined GLBs; imported captures/collections expose `preparationProfile` so hosts
 can display the recorded notice. See the
-[native and texture preparation assessment](internal/plans/NATIVE_PREPARATION_BOUNDARY.md)
+[native and texture preparation reference](NATIVE_PREPARATION.md)
 for implementation limits.
 
 ### Coordinates and generated normals
@@ -439,7 +439,7 @@ presentation and refresh/retention policy; the store does not query Google.
 The injected `EarthAppFiles` owner centralizes managed roots, small atomic
 metadata operations and external authorization lifetimes. SDK workers retain
 bounded streaming, hashing, SQLite and artifact publication. See the
-[app storage policy](internal/architecture/MESS_EARTH_APP_STORAGE.md).
+[app storage reference](APP_STORAGE.md).
 
 Managed locations are relative to `~/Documents/MessEarthKit/`:
 
@@ -533,22 +533,28 @@ project/settings JSON and source artifacts.
 
 ## Verify locally
 
-Use the stable SwiftPM scratch path and normal Xcode DerivedData:
+Run from the repository root, using a stable SwiftPM scratch path outside the
+checkout and normal Xcode DerivedData:
 
 ```sh
-earth_build_root="${MESS_BUILD_CACHE_ROOT:-$HOME/Library/Developer/Xcode/DerivedData/MESS-LocalBuilds}/MessEarthKit"
+earth_build_root="$HOME/Library/Developer/Xcode/DerivedData/MessEarthKit"
 swift test --scratch-path "$earth_build_root/swiftpm"
 swift run --scratch-path "$earth_build_root/swiftpm" MessEarthKitIntegrationProbe
 xcodebuild -project MessEarthKit/MessEarthKit.xcodeproj \
   -scheme MessEarthKitExample -destination 'platform=macOS,arch=arm64' build
 ```
 
+If an enclosing workspace defines a build-cache location, set `earth_build_root`
+to its package-specific directory. Use a distinct directory for concurrent
+checkouts. The tracked [`.swiftformat`](../.swiftformat) defines formatting;
+scope linting to changed Swift files and avoid broad formatting passes.
+
 Normal tests use local fixtures without network access or an API key. Coverage
 includes format/placement/material fidelity, bounded decoding and subdivision,
 large disk-backed acquisition/preparation, restart and cancellation, destination
 safety, credential privacy and request-counter lifecycles. See
 [SDK tests](../Tests/MessEarthKitTests/) and the
-[native preparation assessment](internal/plans/NATIVE_PREPARATION_BOUNDARY.md#verification-and-its-limits)
+[native preparation reference](NATIVE_PREPARATION.md#verification-and-limits)
 for detailed cases and native-decoder coverage limits.
 
 The probe uses the bundled reference by default or accepts a local GLB/tileset
@@ -562,8 +568,3 @@ Fixture contracts and provenance:
 
 - [Orientation fixture and authoring script](../Tools/IntegrationProbe/Fixtures/Orientation/README.md)
 - [Independent Draco fixture and CC-BY-4.0 attribution](../Tests/MessEarthKitTests/Fixtures/DracoBox/PROVENANCE.md)
-
-Internal context: [initial plan](internal/plans/MESS_EARTH_KIT_INITIAL_PLAN.md),
-[disk-backed acquisition plan](internal/plans/DISK_BACKED_CAPTURE_AND_LOCAL_USAGE_PLAN.md),
-[current handoff](internal/handoffs/mess-earth-kit.md) and
-[USGS alternative notes](internal/research/USGS_BUILDING_RECONSTRUCTION_ALTERNATIVE.md).
