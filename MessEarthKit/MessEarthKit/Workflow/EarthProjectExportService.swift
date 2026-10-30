@@ -163,6 +163,24 @@ actor EarthProjectExportService
         }
     }
 
+    func rename(_ record: EarthProjectExportRecord, to name: String) async throws -> [EarthProjectExportItem]
+    {
+        guard !isWorking else { throw EarthProjectCaptureError.workInProgress }
+        isWorking = true
+        defer { isWorking = false }
+        _ = try await history.rename(record, to: name)
+        return try await exports()
+    }
+
+    func delete(_ record: EarthProjectExportRecord) async throws -> [EarthProjectExportItem]
+    {
+        guard !isWorking else { throw EarthProjectCaptureError.workInProgress }
+        isWorking = true
+        defer { isWorking = false }
+        _ = try await history.delete(record)
+        return try await exports()
+    }
+
     func reveal(_ record: EarthProjectExportRecord) async throws
     {
         guard try await files.exportFileIsAvailable(projectID: projectID, record: record) else { throw EarthAppFilesError.missingFile }

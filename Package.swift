@@ -9,16 +9,14 @@ let package = Package(
         .library(name: "MessEarthKit", targets: ["MessEarthKit"]),
         .executable(name: "MessEarthKitIntegrationProbe", targets: ["MessEarthKitIntegrationProbe"]),
     ],
-    dependencies: [
-        .package(url: "https://github.com/warrenm/GLTFKit2.git", exact: "0.5.15"),
-        .package(url: "https://github.com/warrenm/DracoSwift.git", exact: "1.5.7"),
-    ],
     targets: [
+        .binaryTarget(name: "GLTFKit2", path: "ThirdParty/Artifacts/GLTFKit2.xcframework"),
+        .binaryTarget(name: "Draco", path: "ThirdParty/Artifacts/Draco.xcframework"),
         .target(
             name: "EarthDracoBridge",
-            dependencies: [.product(name: "GLTFKit2", package: "GLTFKit2"), .product(name: "DracoSwift", package: "DracoSwift")]
+            dependencies: ["GLTFKit2", "Draco"]
         ),
-        .target(name: "MessEarthKit", dependencies: ["EarthDracoBridge", .product(name: "GLTFKit2", package: "GLTFKit2")], linkerSettings: [.linkedLibrary("sqlite3")]),
+        .target(name: "MessEarthKit", dependencies: ["EarthDracoBridge", "GLTFKit2"], linkerSettings: [.linkedLibrary("sqlite3")]),
         .testTarget(name: "MessEarthKitTests", dependencies: ["MessEarthKit"], resources: [.copy("Fixtures")]),
         // Compile actual app storage/workflow/renderer sources for headless verification,
         // without exposing app types from the public SDK or launching its UI.

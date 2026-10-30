@@ -86,6 +86,13 @@ and report the failure with a Finder action. Publication that wins a concurrent
 cancellation still records the completed file. Cancellation before publication
 adds no history and cannot remove earlier exports.
 
+Each export can be renamed or explicitly deleted while project work is idle.
+Rename keeps the export UUID and provenance, moves the GLB and any optional
+`.glb.info.json` together, then atomically updates history. It rejects invalid
+names and existing destinations; ordinary failures restore the original files.
+Capture names embedded inside the files remain unchanged. Interrupted rename
+can leave a recorded file unavailable and requires review in Finder.
+
 ## Confinement and access
 
 Resolve checked path components beneath the configured root. Reject traversal,
@@ -104,7 +111,7 @@ diagnostics must exclude credentials, source URLs and private absolute paths.
 
 ## Confirmed deletion
 
-Project, location and variant deletion require explicit confirmation and serialize
+Project, location, variant and export deletion require explicit confirmation and serialize
 with metadata saves. Disable deletion during active work; settle workers and GPU
 resources before mutation. Project deletion waits for queued saves and blocks
 later writes from recreating the removed project.
@@ -115,6 +122,12 @@ Location/variant deletion detaches metadata references before moving only their
 recorded source attempts and unshared preparations into a Trash bundle. Shared
 preparations remain. Variant/location deletion retains exports and history.
 Removing a final variant leaves the location's frozen footprint intact.
+
+Deleting an export detaches its history entry and moves only its UUID output
+folder, including its optional information companion, to Trash. A failed Trash
+operation restores history. Missing outputs can be removed from history without
+recreating their folders. Source archives, preparations and other exports remain
+intact.
 
 Normal failures restore moved paths and metadata. Interrupted deletion may leave
 a retained deletion folder; incomplete rollback reports an explicit error. There

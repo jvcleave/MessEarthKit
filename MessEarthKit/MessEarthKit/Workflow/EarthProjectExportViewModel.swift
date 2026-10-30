@@ -43,10 +43,13 @@ final class EarthProjectExportViewModel
 {
     private(set) var isLoading = false
     private(set) var isLoadingHistory = false
+    private(set) var isManagingHistory = false
+    var isBusy: Bool { isLoading || isManagingHistory }
     private(set) var variantID: UUID?
     private(set) var status = ""
     private(set) var errorMessage: String?
     private(set) var historyError: String?
+    private(set) var managementError: String?
     private(set) var history: [EarthProjectExportItem] = []
     private(set) var unrecordedExport: EarthProjectExportRecord?
     private var choices: [UUID: EarthGLBExportOptions] = [:]
@@ -64,13 +67,13 @@ final class EarthProjectExportViewModel
 
     func setPreset(_ preset: EarthProjectExportPreset, variantID: UUID)
     {
-        guard !isLoading else { return }
+        guard !isBusy else { return }
         choices[variantID] = preset.options
     }
 
     func setOption(_ field: EarthProjectExportField, included: Bool, variantID: UUID)
     {
-        guard !isLoading else { return }
+        guard !isBusy else { return }
         var value = options(for: variantID)
         value[keyPath: field.keyPath] = included
         switch field
@@ -88,7 +91,7 @@ final class EarthProjectExportViewModel
 
     func reloadHistory()
     {
-        guard !isLoading, !isLoadingHistory else { return }
+        guard !isBusy, !isLoadingHistory else { return }
         isLoadingHistory = true
         Task
         { [weak self, service] in
@@ -98,13 +101,37 @@ final class EarthProjectExportViewModel
         }
     }
 
+    func rename(_ record: EarthProjectExportRecord, to name: String)
+    { updateHistory { [service] in try await service.rename(record, to: name) } }
+
+    func delete(_ record: EarthProjectExportRecord)
+    { updateHistory { [service] in try await service.delete(record) } }
+
+    private func updateHistory(_ operation: @escaping @Sendable () async throws -> [EarthProjectExportItem])
+    {
+        guard !isBusy, !isLoadingHistory else { return }
+        isManagingHistory = true
+        managementError = nil
+        Task
+        {
+            defer { isManagingHistory = false }
+            do { history = try await operation(); historyError = nil }
+            catch
+            {
+                managementError = error.localizedDescription
+                do { history = try await service.exports(); historyError = nil }
+                catch { historyError = error.localizedDescription }
+            }
+        }
+    }
+
     func export(
         variantID: UUID,
         saveEdits: @escaping @MainActor () async throws -> Void,
         onFinished: @escaping @MainActor () async -> Void
     )
     {
-        guard !isLoading, !isLoadingHistory else { return }
+        guard !isBusy, !isLoadingHistory else { return }
         let requestedOptions = options(for: variantID)
         let requestedPreset = presetName(for: variantID)
         let job = UUID()

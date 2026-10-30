@@ -187,7 +187,7 @@ final class EarthProjectViewModel: Identifiable
 
     func cancelMapAreaEdit() { mapEdit.cancel() }
 
-    var isBusy: Bool { phase != .idle || preview.isLoading || export.isLoading || mapEdit.isEditing }
+    var isBusy: Bool { phase != .idle || preview.isLoading || export.isBusy || mapEdit.isEditing }
     var canAddVariant: Bool { confirmation != nil && areaAdjustment == nil && !isBusy }
     var canApplyAreaAdjustment: Bool { confirmation != nil && areaAdjustment != nil && !isBusy }
     var hasAPIKey: Bool { !settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

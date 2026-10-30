@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "platform": "macOS arm64 and x86_64",
+  "components": [
+    {
+      "name": "GLTFKit2",
+      "version": "0.5.15",
+      "repository": "https://github.com/warrenm/GLTFKit2",
+      "revision": "e69e354c4f31ea07b7816b8cbe2ddb28e897d073",
+      "source": "Sources/GLTFKit2-0.5.15.tar.gz",
+      "artifact": "Artifacts/GLTFKit2.xcframework",
+      "selection": "GLTFKit2 implementation, Xcode project, cgltf, libktx license/version, root license/readme/manifest/build script; excludes viewer example and prebuilt libktx slices.",
+      "upstreamArtifactURL": "https://github.com/warrenm/GLTFKit2/releases/download/0.5.15/GLTFKit2.xcframework.zip",
+      "upstreamArtifactSHA256": "9d0c338282acce4986494aa02a5f1495278f56c60d43f31453fefea6875b4928"
+    },
+    {
+      "name": "DracoSwift",
+      "version": "1.5.7",
+      "repository": "https://github.com/warrenm/DracoSwift",
+      "revision": "3f85e64b4e62b070871dfdc1e26c058aaa1de63e",
+      "source": "Sources/DracoSwift-1.5.7.tar.gz",
+      "artifact": "Artifacts/Draco.xcframework",
+      "selection": "Package manifest, README, AUTHORS and LICENSE; implementation is in the separate draco source archive."
+    },
+    {
+      "name": "draco",
+      "version": "1.5.7",
+      "repository": "https://github.com/google/draco",
+      "revision": "8786740086a9f4d83f44aa83badfbea4dce7a1b5",
+      "source": "Sources/draco-1.5.7.tar.gz",
+      "selection": "Root files, src and cmake; excludes test datasets, non-native bindings, examples outside src and optional transcoder/test submodules. Native codec builds with tests, plugin bindings and transcoder disabled."
+    },
+    {
+      "name": "KTX-Software",
+      "version": "4.2.1",
+      "repository": "https://github.com/KhronosGroup/KTX-Software",
+      "revision": "170e75893e3d232a2c4f241afe199256f8abb6f9",
+      "source": "Sources/KTX-Software-4.2.1.tar.gz",
+      "selection": "Root files, .reuse, LICENSES, cmake, include, interface, lib, other_include, other_projects, utils and tests/CMakeLists.txt; excludes ASTC test images, examples, tools, test datasets and documentation assets. Build libraries with tests/tools/docs/load-test apps disabled. Also excludes Basis Universal web demos, test images, contributed previewers, prebuilt tools and performance chart."
+    },
+    {
+      "name": "cgltf",
+      "repository": "https://github.com/jkuhlmann/cgltf",
+      "revision": "As embedded in GLTFKit2 revision e69e354c4f31ea07b7816b8cbe2ddb28e897d073",
+      "source": "Sources/GLTFKit2-0.5.15.tar.gz",
+      "selection": "Unmodified GLTFKit2/deps/cgltf directory, including its license."
+    }
+  ],
+  "artifactChanges": "Only macOS AvailableLibraries entries/slices are retained. Frameworks, static library, headers, module maps and macOS debug symbols are byte-for-byte upstream; only outer XCFramework Info.plist files are reduced.",
+  "sourceChanges": "Selected file contents are unchanged. Archive paths are normalized to versioned directories; archive metadata is deterministic. Excluded optional upstream components are not needed for native library recovery."
+}

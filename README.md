@@ -180,8 +180,10 @@ Add the library product to the consuming target's `dependencies`:
 .product(name: "MessEarthKit", package: "MessEarthKit")
 ```
 
-Use an exact version or Git revision when you need a fixed integration. SwiftPM
-resolves the package's GLTFKit2 and DracoSwift dependencies.
+Use an exact version or Git revision when you need a fixed integration. This
+checkout includes its native frameworks and recovery source archives under
+[`ThirdParty/`](ThirdParty/README.md); normal builds do not download GLTFKit2 or
+DracoSwift from upstream.
 
 ### Read a tileset or GLB
 

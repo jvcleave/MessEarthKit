@@ -67,7 +67,7 @@ final class EarthProjectLibraryViewModel
 
     func canEditMap(_ id: UUID) -> Bool
     {
-        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isLoading else { return false }
+        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isBusy else { return false }
         return !owners.values.contains { $0.id != id && $0.isBusy }
     }
 

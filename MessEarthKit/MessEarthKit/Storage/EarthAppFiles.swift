@@ -10,6 +10,8 @@ enum EarthAppFilesError: Error, Equatable, LocalizedError, Sendable
     case invalidMetadata
     case storage
     case deletionIncomplete
+    case renameIncomplete
+    case invalidExportName
 
     var errorDescription: String?
     {
@@ -21,6 +23,8 @@ enum EarthAppFilesError: Error, Equatable, LocalizedError, Sendable
             case .invalidMetadata: "The project metadata is empty, oversized or invalid."
             case .storage: "The file operation failed. Check folder access and available disk space."
             case .deletionIncomplete: "Deletion could not finish or fully restore its files. Refresh the project to review its saved state. Retained files may be in Trash or the project's deletion folder."
+            case .renameIncomplete: "Rename could not finish or fully restore its files. Reload export history and review the export folder in Finder."
+            case .invalidExportName: "Enter a shorter filename using letters, numbers, spaces, periods, hyphens or underscores. The .glb extension is kept."
         }
     }
 }
@@ -271,6 +275,76 @@ actor EarthAppFiles
         guard values[.type] as? FileAttributeType == .typeRegular, let size = values[.size] as? NSNumber
         else { throw EarthAppFilesError.invalidLocation }
         return size.intValue > 0
+    }
+
+    /// Keep the optional companion with its GLB. All moves and the metadata
+    /// write run without actor suspension; ordinary failures restore the files.
+    func renameExport(projectID: UUID, record: EarthProjectExportRecord, name: String, originalMetadata: Data, updatedMetadata: Data) throws
+    {
+        guard try readMetadata(.exports(projectID)) == originalMetadata else { throw EarthAppFilesError.invalidMetadata }
+        let renamed = try record.renamed(to: name)
+        guard try exportFileIsAvailable(projectID: projectID, record: record) else { throw EarthAppFilesError.missingFile }
+        if renamed.fileName == record.fileName { return }
+        let original = try exportFileURL(projectID: projectID, record: record)
+        let destination = try exportFileURL(projectID: projectID, record: renamed)
+        let companion = try checkedManagedURL(EarthGLBInfo.companionURL(original))
+        let renamedCompanion = try checkedManagedURL(EarthGLBInfo.companionURL(destination))
+        if let values = try attributes(companion), values[.type] as? FileAttributeType != .typeRegular
+        { throw EarthAppFilesError.invalidLocation }
+        // Do not overwrite any existing file, including an untracked companion.
+        try checkExportRenameDestination(destination, original: original)
+        try checkExportRenameDestination(renamedCompanion, original: companion)
+        var moved: [(original: URL, destination: URL)] = []
+        do
+        {
+            try FileManager.default.moveItem(at: original, to: destination)
+            moved.append((original, destination))
+            if try attributes(companion) != nil
+            {
+                try FileManager.default.moveItem(at: companion, to: renamedCompanion)
+                moved.append((companion, renamedCompanion))
+            }
+            try writeMetadata(updatedMetadata, location: .exports(projectID))
+        }
+        catch
+        {
+            do { for item in moved.reversed() { try FileManager.default.moveItem(at: item.destination, to: item.original) } }
+            catch { throw EarthAppFilesError.renameIncomplete }
+            if let error = error as? EarthAppFilesError { throw error }
+            throw EarthAppFilesError.storage
+        }
+    }
+
+    private func checkExportRenameDestination(_ destination: URL, original: URL) throws
+    {
+        guard let values = try attributes(destination) else { return }
+        // A case-only rename on a case-insensitive volume resolves to the same
+        // file. FileManager supports that move without replacing another file.
+        guard destination.lastPathComponent.compare(original.lastPathComponent, options: .caseInsensitive) == .orderedSame,
+              let originalValues = try attributes(original),
+              let originalNumber = originalValues[.systemFileNumber] as? NSNumber,
+              let destinationNumber = values[.systemFileNumber] as? NSNumber,
+              originalNumber == destinationNumber
+        else { throw EarthAppFilesError.invalidLocation }
+    }
+
+    /// Detach history before moving the export's entire UUID folder to Trash.
+    /// A missing folder can still be explicitly removed from history.
+    func trashExport(projectID: UUID, record: EarthProjectExportRecord, originalMetadata: Data, updatedMetadata: Data) throws
+    {
+        guard try readMetadata(.exports(projectID)) == originalMetadata else { throw EarthAppFilesError.invalidMetadata }
+        let directory = try exportFileURL(projectID: projectID, record: record).deletingLastPathComponent()
+        try validateArtifactDirectory(directory, projectID: projectID, kind: .output)
+        let values = try attributes(directory)
+        if let values, values[.type] as? FileAttributeType != .typeDirectory { throw EarthAppFilesError.invalidLocation }
+        try writeMetadata(updatedMetadata, location: .exports(projectID))
+        do { if values != nil { try trash(directory) } }
+        catch
+        {
+            do { try writeMetadata(originalMetadata, location: .exports(projectID)) }
+            catch { throw EarthAppFilesError.deletionIncomplete }
+            throw EarthAppFilesError.storage
+        }
     }
 
     func discardEmptyExportDirectory(containing fileURL: URL, projectID: UUID) throws

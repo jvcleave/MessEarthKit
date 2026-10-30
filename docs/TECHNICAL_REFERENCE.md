@@ -16,11 +16,14 @@ Commands and source paths below assume the repository root.
 
 ## Package use
 
-The package requires macOS 15.6+ and Swift 6.2+. GLTFKit2 is pinned to
-[0.5.15](https://github.com/warrenm/GLTFKit2/tree/0.5.15) and DracoSwift to
-[1.5.7](https://github.com/warrenm/DracoSwift/tree/1.5.7); SwiftPM resolves their
-native framework artifacts. The package has no sibling checkout paths or runtime
-Python/Blender dependency. Upstream repositories include source and license notices.
+The package requires macOS 15.6+ and Swift 6.2+. It includes GLTFKit2 0.5.15 and
+DracoSwift 1.5.7 as local binary targets with universal macOS arm64/x86_64 slices.
+Normal builds require no upstream package or release downloads. Matching native
+implementation sources, including Google Draco 1.5.7, libktx 4.2.1 and embedded
+cgltf, are preserved with licenses, immutable revisions and checksums in
+[`ThirdParty/`](../ThirdParty/README.md). That reference also documents source
+recovery and intentionally excluded optional upstream components. The package
+has no sibling checkout paths or runtime Python/Blender dependency.
 
 | Task | API |
 | --- | --- |
@@ -490,8 +493,18 @@ Every name includes `geom` (positions/triangle indices), followed by enabled
 The GLB scene/root node retain the unmodified chosen name; capture identity
 metadata restores the authored name on import.
 
-Existing exports keep their recorded filenames. Export history retains its
-schema and texture flag; detailed channel choices are stored in each new GLB.
+Each export offers **Rename…** and **Delete…** while project work is idle.
+Rename accepts letters, numbers, spaces, periods, hyphens and underscores, keeps
+the `.glb` extension and moves its optional information companion alongside it.
+Names must fit within 245 UTF-8 bytes including `.glb`, reserving room for the
+companion suffix. Rename preserves the export UUID, captured identity and file
+contents. Delete requires confirmation, moves that export's output folder to
+macOS Trash and removes its history entry. Missing files can also be removed
+from history. Both actions leave the variant's source and prepared models intact.
+See [storage lifetimes and failure handling](APP_STORAGE.md#source-preparation-and-export-lifetimes).
+
+Export history retains its schema and texture flag; detailed channel choices
+are stored in each new GLB.
 
 ### Preview ownership
 

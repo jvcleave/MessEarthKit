@@ -14,8 +14,8 @@ private func projectExportService(files: EarthAppFiles, store: EarthProjectStore
 {
     let clock = ContinuousClock()
     let deadline = clock.now.advanced(by: .seconds(10))
-    while export.isLoading || export.isLoadingHistory, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
-    try #require(!export.isLoading && !export.isLoadingHistory)
+    while export.isBusy || export.isLoadingHistory, clock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+    try #require(!export.isBusy && !export.isLoadingHistory)
 }
 
 private enum ProjectExportChoice: CaseIterable, Sendable
@@ -259,4 +259,136 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
         #expect(imported.identity?.request == raw.request)
         #expect(try await files.readMetadata(.exports(project.id)) == damaged)
     }
+}
+
+// Renaming preserves immutable bytes/provenance and survives reopening. Reject
+// traversal/collisions and roll back both files when history cannot be written.
+@Test @MainActor private func projectExportRenamePreservesCompanionAndRollsBackFailure() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = try EarthAppFiles(storageRootURL: root)
+    try await files.initialize()
+    let store = EarthProjectStore(files: files)
+    let project = try await store.create()
+    let raw = try await projectSourceFixture(files: files, projectID: project.id)
+    let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
+    let service = projectExportService(files: files, store: store, projectID: project.id)
+    let result = try await service.export(variantID: #require(registered.selectedCaptureID), options: .untextured, progress: { _ in })
+    let before = try await store.record(id: project.id)
+    let metadata = try #require(try await files.readMetadata(.exports(project.id)))
+    let bytes = try Data(contentsOf: result.fileURL)
+    let infoBytes = try Data(contentsOf: EarthGLBInfo.companionURL(result.fileURL))
+    await #expect(throws: EarthAppFilesError.invalidExportName)
+    { try await service.rename(result.output, to: "../Escaping") }
+    let collision = result.fileURL.deletingLastPathComponent().appendingPathComponent("Existing.glb.info.json")
+    try infoBytes.write(to: collision)
+    await #expect(throws: EarthAppFilesError.invalidLocation)
+    { try await service.rename(result.output, to: "Existing") }
+    #expect(try Data(contentsOf: collision) == infoBytes)
+    await #expect(throws: EarthAppFilesError.invalidMetadata)
+    {
+        try await files.renameExport(projectID: project.id, record: result.output, name: "Rolled back", originalMetadata: metadata, updatedMetadata: Data())
+    }
+    #expect(try await files.readMetadata(.exports(project.id)) == metadata)
+    #expect(try Data(contentsOf: result.fileURL) == bytes)
+    #expect(try Data(contentsOf: EarthGLBInfo.companionURL(result.fileURL)) == infoBytes)
+    let export = EarthProjectExportViewModel(service: service)
+    export.rename(result.output, to: "City Model.GLB")
+    #expect(export.isBusy && export.isManagingHistory)
+    // A second action cannot act on stale history while the first is pending.
+    export.delete(result.output)
+    try await settleExport(export)
+    try #require(export.managementError == nil && export.historyError == nil)
+    let renamed = try #require(export.history.first?.record)
+    var expected = result.output
+    expected.fileName = "City Model.glb"
+    #expect(renamed == expected)
+    #expect(!FileManager.default.fileExists(atPath: result.fileURL.path))
+    let finalItems = try await service.rename(renamed, to: "city model")
+    let final = try #require(finalItems.first?.record)
+    let target = try await files.exportFileURL(projectID: project.id, record: final)
+    #expect(final.fileName == "city model.glb")
+    #expect(try FileManager.default.contentsOfDirectory(atPath: target.deletingLastPathComponent().path).contains(final.fileName))
+    #expect(try Data(contentsOf: target) == bytes)
+    #expect(try Data(contentsOf: EarthGLBInfo.companionURL(target)) == infoBytes)
+    try FileManager.default.removeItem(at: EarthGLBInfo.companionURL(target))
+    let withoutCompanion = try #require(try await service.rename(final, to: "Without companion").first?.record)
+    let withoutCompanionURL = try await files.exportFileURL(projectID: project.id, record: withoutCompanion)
+    #expect(try Data(contentsOf: withoutCompanionURL) == bytes)
+    #expect(!FileManager.default.fileExists(atPath: EarthGLBInfo.companionURL(withoutCompanionURL).path))
+    let reopened = projectExportService(files: files, store: EarthProjectStore(files: files), projectID: project.id)
+    #expect(try await reopened.exports().map(\.record) == [withoutCompanion])
+    #expect(try await store.record(id: project.id) == before)
+}
+
+private enum ExportDeletionCase: CaseIterable, Sendable { case available, missing, trashFailure, escapingOutput }
+
+// Use an injected Trash destination, never the user's Trash. Scope is one
+// output folder; failure restores history, and missing folders stay absent.
+@Test(arguments: ExportDeletionCase.allCases)
+@MainActor private func projectExportDeletionPreservesVariantAndOtherExports(scenario: ExportDeletionCase) async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let trash = root.appendingPathComponent("Trash", isDirectory: true)
+    let files = try EarthAppFiles(storageRootURL: root.appendingPathComponent("App", isDirectory: true), trash: { url in
+        if scenario == .trashFailure { throw EarthAppFilesError.storage }
+        try FileManager.default.moveItem(at: url, to: trash)
+    })
+    try await files.initialize()
+    let store = EarthProjectStore(files: files)
+    let project = try await store.create()
+    let raw = try await projectSourceFixture(files: files, projectID: project.id)
+    let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
+    let service = projectExportService(files: files, store: store, projectID: project.id)
+    let variantID = try #require(registered.selectedCaptureID)
+    let removed = try await service.export(variantID: variantID, options: .untextured, progress: { _ in })
+    let retained = try await service.export(variantID: variantID, options: .minimal, progress: { _ in })
+    let before = try await store.record(id: project.id)
+    let sourceBytes = try Data(contentsOf: #require(raw.rootSourceURL))
+    let retainedBytes = try Data(contentsOf: retained.fileURL)
+    let removedBytes = try Data(contentsOf: removed.fileURL)
+    let infoBytes = try Data(contentsOf: EarthGLBInfo.companionURL(removed.fileURL))
+    let metadata = try await files.readMetadata(.exports(project.id))
+    let folder = removed.fileURL.deletingLastPathComponent()
+    if scenario == .missing { try FileManager.default.removeItem(at: folder) }
+    if scenario == .escapingOutput
+    {
+        let external = root.appendingPathComponent("External")
+        try FileManager.default.moveItem(at: folder, to: external)
+        try FileManager.default.createSymbolicLink(at: folder, withDestinationURL: external)
+        await #expect(throws: EarthAppFilesError.invalidLocation) { try await service.delete(removed.output) }
+        #expect(try await files.readMetadata(.exports(project.id)) == metadata)
+        #expect(try Data(contentsOf: external.appendingPathComponent(removed.output.fileName)) == removedBytes)
+    }
+    else
+    {
+        let export = EarthProjectExportViewModel(service: service)
+        export.delete(removed.output)
+        #expect(export.isBusy)
+        try await settleExport(export)
+        if scenario == .trashFailure
+        {
+            #expect(export.managementError == EarthAppFilesError.storage.localizedDescription)
+            #expect(try await files.readMetadata(.exports(project.id)) == metadata)
+            #expect(try Data(contentsOf: removed.fileURL) == removedBytes)
+            #expect(try Data(contentsOf: EarthGLBInfo.companionURL(removed.fileURL)) == infoBytes)
+        }
+        else
+        {
+            #expect(export.managementError == nil && export.history.map(\.record) == [retained.output])
+            #expect(!FileManager.default.fileExists(atPath: folder.path))
+            let reopened = projectExportService(files: files, store: EarthProjectStore(files: files), projectID: project.id)
+            #expect(try await reopened.exports().map(\.record) == [retained.output])
+            if scenario == .available
+            {
+                #expect(try Data(contentsOf: trash.appendingPathComponent(removed.output.fileName)) == removedBytes)
+                #expect(try Data(contentsOf: EarthGLBInfo.companionURL(trash.appendingPathComponent(removed.output.fileName))) == infoBytes)
+            }
+        }
+    }
+    #expect(try Data(contentsOf: retained.fileURL) == retainedBytes)
+    #expect(try Data(contentsOf: #require(raw.rootSourceURL)) == sourceBytes)
+    #expect(try await store.record(id: project.id) == before)
 }
