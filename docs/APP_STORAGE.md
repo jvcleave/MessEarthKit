@@ -66,6 +66,15 @@ profile/source; navigation never starts transport or selects a newest archive.
 Location/variant mutation and area-freeze rules are described in the
 [project metadata contract](TECHNICAL_REFERENCE.md#project-metadata).
 
+The app queue admits two independent source acquisitions and serializes native
+model preparation, including preview/export preparation. Jobs retain explicit
+project/variant/source identity and survive navigation; they never use a later
+selection as their write target. Queue entries are session-only, while SDK
+journals retain completed source files and interruption checkpoints on disk.
+Pause waits for the worker to stop before releasing its slot. Active variants,
+their containing locations and projects cannot be deleted, and their source
+detail/area cannot change. Unrelated variants and projects remain available.
+
 Completed source archives are immutable. Preparation and export use new
 destinations outside their input archives. Create required parents, but leave
 destinations absent when the SDK's API requires that. Failed/cancelled work may

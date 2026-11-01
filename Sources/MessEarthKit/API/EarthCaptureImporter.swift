@@ -205,7 +205,7 @@ public actor EarthCaptureImporter
                         }
                         // 3D Tiles converts glTF's Y-up coordinates to tile Z-up before applying tile transforms.
                         let gltfToTile = simd_double4x4(columns: (SIMD4(1, 0, 0, 0), SIMD4(0, 0, 1, 0), SIMD4(0, -1, 0, 0), SIMD4(0, 0, 0, 1)))
-                        try appendGLB(data: data, transform: earthToLocal * transform * gltfToTile, assembly: &assembly)
+                        try appendGLB(data: data, transform: earthToLocal * transform * gltfToTile, allowsDegenerateOnlyScene: true, assembly: &assembly)
                     case "json":
                         guard activeFiles.insert(url).inserted
                         else { throw EarthImportError.invalidContent("External tileset references form a cycle.") }
@@ -225,10 +225,11 @@ public actor EarthCaptureImporter
     private func appendGLB(
         data: Data,
         transform: simd_double4x4,
+        allowsDegenerateOnlyScene: Bool = false,
         assembly: inout EarthImportAssembly
     ) throws
     {
-        let part = try autoreleasepool { try EarthGLBDecoder(limits: limits).decode(data: data, transform: transform) }
+        let part = try autoreleasepool { try EarthGLBDecoder(limits: limits).decode(data: data, transform: transform, allowsDegenerateOnlyScene: allowsDegenerateOnlyScene) }
         let addedVertices = part.meshes.reduce(0) { $0 + $1.vertices.count }
         guard addedVertices <= limits.maximumVertices - assembly.vertexCount
         else { throw EarthImportError.limitExceeded("Capture vertex count would reach \(assembly.vertexCount + addedVertices) (limit \(limits.maximumVertices)). Increase Maximum Vertices or reduce the area or detail.") }

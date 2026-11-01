@@ -44,6 +44,8 @@ final class EarthProjectLibraryViewModel
     private(set) var errorMessage: String?
     private(set) var deletionTarget: EarthDeletionTarget?
     private(set) var isDeleting = false
+    private let downloadQueue = EarthDownloadQueue()
+    private let preparationGate = EarthPreparationGate()
     @ObservationIgnored private let files: EarthAppFiles
     @ObservationIgnored private let store: EarthProjectStore
     @ObservationIgnored private var owners: [UUID: EarthProjectViewModel] = [:]
@@ -61,19 +63,28 @@ final class EarthProjectLibraryViewModel
 
     func project(id: UUID) -> EarthProjectViewModel? { owners[id] }
 
-    var canStartWork: Bool { !isDeleting && !owners.values.contains(where: { $0.isBusy }) }
+    var canStartWork: Bool { !isDeleting }
 
     var canRequestDeletion: Bool { canStartWork && !isCreating && !isLoading }
+
+    func canDeleteProject(_ id: UUID) -> Bool
+    { canRequestDeletion && owners[id]?.isBusy != true && owners[id]?.hasActiveDownloads != true && owners[id]?.isSaving != true }
+
+    func canDeleteLocation(_ projectID: UUID, locationID: UUID) -> Bool
+    { canRequestDeletion && owners[projectID]?.canDeleteLocation(locationID) == true }
+
+    func canDeleteCapture(_ projectID: UUID, captureID: UUID) -> Bool
+    { canRequestDeletion && owners[projectID]?.canDeleteCapture(captureID) == true }
 
     func canEditMap(_ id: UUID) -> Bool
     {
         guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isBusy else { return false }
-        return !owners.values.contains { $0.id != id && $0.isBusy }
+        return owner.canEditCurrentLocation
     }
 
     func canViewPreview(_ id: UUID, captureID: UUID) -> Bool
     {
-        guard !isDeleting, let owner = owners[id], !owners.values.contains(where: { $0.id != id && $0.isBusy }) else { return false }
+        guard !isDeleting, let owner = owners[id], owner.downloadJob(captureID)?.phase.isActive != true else { return false }
         return !owner.isBusy || (owner.selectedCaptureID == captureID && (owner.phase == .preparing || owner.preview.isLoading))
     }
 
@@ -96,7 +107,7 @@ final class EarthProjectLibraryViewModel
                 var values: [EarthProjectViewModel] = []
                 for opened in library.projects
                 {
-                    let owner = owners[opened.record.id] ?? EarthProjectViewModel(opened: opened, store: store, appFiles: files, settings: settings)
+                    let owner = owners[opened.record.id] ?? EarthProjectViewModel(opened: opened, store: store, appFiles: files, settings: settings, downloadQueue: downloadQueue, preparationGate: preparationGate)
                     owners[owner.id] = owner
                     values.append(owner)
                 }
@@ -119,7 +130,7 @@ final class EarthProjectLibraryViewModel
             do
             {
                 let record = try await store.create()
-                let owner = EarthProjectViewModel(opened: .init(record: record, archive: nil, prepared: nil), store: store, appFiles: files, settings: settings)
+                let owner = EarthProjectViewModel(opened: .init(record: record, archive: nil, prepared: nil), store: store, appFiles: files, settings: settings, downloadQueue: downloadQueue, preparationGate: preparationGate)
                 owners[owner.id] = owner
                 projects.insert(owner, at: 0)
                 errorMessage = nil
@@ -139,21 +150,21 @@ final class EarthProjectLibraryViewModel
 
     func requestProjectDeletion(_ id: UUID)
     {
-        guard canRequestDeletion, owners[id]?.isSaving != true,
+        guard canDeleteProject(id),
               owners[id] != nil || failures.contains(where: { $0.id == id }) else { return }
         deletionTarget = .project(id: id, title: owners[id]?.displayTitle ?? "Project \(id.uuidString.prefix(8))")
     }
 
     func requestCaptureDeletion(_ projectID: UUID, captureID: UUID)
     {
-        guard canRequestDeletion, let owner = owners[projectID], !owner.isSaving,
+        guard canDeleteCapture(projectID, captureID: captureID), let owner = owners[projectID],
               let variant = owner.captures.first(where: { $0.id == captureID }) else { return }
         deletionTarget = .variant(projectID: projectID, captureID: captureID, title: variant.title)
     }
 
     func requestLocationDeletion(_ projectID: UUID, locationID: UUID)
     {
-        guard canRequestDeletion, let owner = owners[projectID], !owner.isSaving,
+        guard canDeleteLocation(projectID, locationID: locationID), let owner = owners[projectID],
               let location = owner.locations.first(where: { $0.id == locationID }) else { return }
         deletionTarget = .location(projectID: projectID, locationID: locationID, title: location.displayTitle)
     }
@@ -212,10 +223,7 @@ final class EarthProjectLibraryViewModel
     func download(_ id: UUID, captureID: UUID)
     {
         guard canStartWork, let owner = owners[id], owner.areaAdjustment == nil else { return }
-        owner.selectCapture(captureID)
-        { [weak self, weak owner] in
-            owner?.download(onPrepared: { [weak self] in self?.renderIfVisible(id) })
-        }
+        owner.enqueueDownload(captureID)
     }
 
     func showPreview(_ id: UUID, captureID: UUID)
@@ -364,7 +372,7 @@ struct EarthProjectLibraryView: View
                         }.buttonStyle(.plain).disabled(viewModel.isDeleting)
                         Button(role: .destructive) { viewModel.requestProjectDeletion(project.id) } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless).help("Delete Project").accessibilityLabel("Delete \(project.displayTitle)")
-                            .disabled(!viewModel.canRequestDeletion || project.isSaving)
+                            .disabled(!viewModel.canDeleteProject(project.id))
                     }
                 }
             }

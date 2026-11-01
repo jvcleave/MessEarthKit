@@ -20,7 +20,8 @@ struct EarthGLBDecoder
 
     func decode(
         data: Data,
-        transform: simd_double4x4
+        transform: simd_double4x4,
+        allowsDegenerateOnlyScene: Bool = false
     ) throws -> EarthGLBPart
     {
         let json = try preflight(data: data)
@@ -61,13 +62,17 @@ struct EarthGLBDecoder
             }
             part.materials.append(value)
         }
+        let recordedOmissions = part.omittedDegenerateTriangleCount
         var visitedNodes = 0
         var activeNodes: Set<ObjectIdentifier> = []
         for node in scene.nodes
         {
             try appendNode(node: node, parentTransform: transform, depth: 0, visitedNodes: &visitedNodes, activeNodes: &activeNodes, materialIndices: materialIndices, part: &part)
         }
-        guard !part.meshes.isEmpty
+        // A tileset validates usable geometry across all of its payloads. Only
+        // triangles actually omitted here can justify an empty tile; saved
+        // omission metadata alone must not admit an empty or malformed scene.
+        guard !part.meshes.isEmpty || (allowsDegenerateOnlyScene && part.omittedDegenerateTriangleCount > recordedOmissions)
         else { throw EarthImportError.invalidContent("The selected scene has no usable triangle geometry.") }
         return part
     }

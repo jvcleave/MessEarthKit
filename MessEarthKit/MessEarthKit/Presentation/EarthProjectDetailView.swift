@@ -24,7 +24,7 @@ struct EarthProjectDetailView: View
             ToolbarItem
             {
                 Button("Refresh Project", systemImage: "arrow.clockwise") { library.refreshProject(project.id) }
-                    .disabled(!library.canStartWork)
+                    .disabled(!library.canStartWork || project.isBusy)
             }
         }
     }

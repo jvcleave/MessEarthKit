@@ -2,6 +2,16 @@ import Foundation
 @testable import MessEarthKit
 import Testing
 
+@MainActor private func settleLocationRename(_ draft: EarthLocationRenameViewModel) async throws
+{
+    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+    while draft.isResolving || draft.isSaving
+    {
+        try #require(ContinuousClock.now < deadline)
+        try await Task.sleep(for: .milliseconds(5))
+    }
+}
+
 private actor NamingCities
 {
     var centres: [EarthGeographicOrigin] = []
@@ -59,6 +69,46 @@ private actor NamingCities
     #expect(renamed.locations.first { $0.id == original.id } == original)
 }
 
+// Restoring an older custom name changes only naming policy, even after the
+// source is frozen and another location is being edited.
+@Test @MainActor func locationAutoNameRestoresFrozenLocationsWithoutChangingCaptures() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = try EarthAppFiles(storageRootURL: root)
+    try await files.initialize()
+    let store = EarthProjectStore(files: files, cityLookup: { _ in "Chicago" })
+    let project = try await store.create()
+    let center = try EarthGeographicOrigin(latitude: 41.87811347, longitude: -87.62980539)
+    let source = try await projectSourceFixture(files: files, projectID: project.id, origin: center)
+    let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: source)
+    let original = try #require(registered.editingLocation)
+    let manifest = try Data(contentsOf: #require(source.rootSourceURL))
+    let other = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 40.7, longitude: -74), title: "Elsewhere")
+    var adopted: EarthProjectRecord?
+    let manual = EarthLocationRenameViewModel(projectID: project.id, location: original, store: store, onSaved: { adopted = $0 })
+    manual.setName("Renamed existing location")
+    manual.save()
+    try await settleLocationRename(manual)
+    #expect(manual.didSave && adopted?.locations.first { $0.id == original.id }?.title == "Renamed existing location")
+    let updated = try #require(adopted?.locations.first { $0.id == original.id })
+    let automatic = EarthLocationRenameViewModel(projectID: project.id, location: updated, store: store, onSaved: { adopted = $0 })
+    let beforeSuggestion = try await files.readMetadata(.project(project.id))
+    automatic.useAutomaticName()
+    try await settleLocationRename(automatic)
+    #expect(automatic.name == "Chicago · 41.87811, -87.62981")
+    #expect(try await files.readMetadata(.project(project.id)) == beforeSuggestion)
+    automatic.save()
+    try await settleLocationRename(automatic)
+    try #require(automatic.didSave)
+    let reopened = try await EarthProjectStore(files: files).open(id: project.id)
+    let named = try #require(reopened.record.locations.first { $0.id == original.id })
+    #expect(named.name == .automatic(city: "Chicago") && named.title == "Chicago · 41.87811, -87.62981")
+    #expect(named.area == original.area && named.frozenAt == original.frozenAt && named.variants == original.variants)
+    #expect(reopened.record.editingLocationID == other.editingLocationID && reopened.record.selectedCaptureID == registered.selectedCaptureID)
+    #expect(try Data(contentsOf: #require(source.rootSourceURL)) == manifest)
+}
+
 private actor NamingSuspension
 {
     private var result: CheckedContinuation<String, Never>?
@@ -112,6 +162,27 @@ private actor NamingSuspension
     #expect(try await store.record(id: project.id).editingLocation?.title == "Hand edited")
 }
 
+@Test func delayedAutoNameCannotReplaceALaterManualName() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = try EarthAppFiles(storageRootURL: root)
+    try await files.initialize()
+    let gate = NamingSuspension()
+    let store = EarthProjectStore(files: files, cityLookup: { _ in await gate.resolve() })
+    let project = try await store.create()
+    let added = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 41, longitude: -87), title: "Older name")
+    let location = try #require(added.editingLocation)
+    let restoring = Task { try await store.restoreAutomaticLocationName(id: project.id, locationID: location.id) }
+    await gate.waitForLookup()
+    var edited = location.edit
+    edited.title = "New manual name"
+    _ = try await store.updateEditor(id: project.id, locations: [location.id: edited])
+    await gate.finish()
+    await #expect(throws: EarthProjectStoreError.changedLocation) { try await restoring.value }
+    #expect(try await store.record(id: project.id).editingLocation?.title == "New manual name")
+}
+
 @Test func cityLookupFailureDoesNotCreateAnInventedLocationName() async throws
 {
     let root = try projectStoreTestRoot()
@@ -123,6 +194,12 @@ private actor NamingSuspension
     await #expect(throws: EarthLocationNamingError.self)
     { try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 0, longitude: 0)) }
     #expect(try await store.record(id: project.id).locations.isEmpty)
+    let custom = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 0, longitude: 0), title: "Keep my name")
+    let locationID = try #require(custom.editingLocationID)
+    let before = try await files.readMetadata(.project(project.id))
+    await #expect(throws: EarthLocationNamingError.self)
+    { try await store.restoreAutomaticLocationName(id: project.id, locationID: locationID) }
+    #expect(try await files.readMetadata(.project(project.id)) == before)
 }
 
 @Test(arguments: [false, true])

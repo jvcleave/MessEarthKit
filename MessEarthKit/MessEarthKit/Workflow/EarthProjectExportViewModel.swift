@@ -2,21 +2,6 @@ import Foundation
 import MessEarthKit
 import Observation
 
-enum EarthProjectExportPreset: String, CaseIterable, Sendable
-{
-    case full = "Full", untextured = "Untextured", minimal = "Minimal"
-
-    var options: EarthGLBExportOptions
-    {
-        switch self
-        {
-            case .full: .full
-            case .untextured: .untextured
-            case .minimal: .minimal
-        }
-    }
-}
-
 enum EarthProjectExportField: String, CaseIterable, Identifiable
 {
     case normals = "Normals", vertexColors = "Vertex colors", textureCoordinates = "UV coordinates"
@@ -62,15 +47,6 @@ final class EarthProjectExportViewModel
 
     func options(for variantID: UUID) -> EarthGLBExportOptions { choices[variantID] ?? .full }
 
-    func presetName(for variantID: UUID) -> String
-    { EarthProjectExportPreset.allCases.first { $0.options == options(for: variantID) }?.rawValue ?? "Custom" }
-
-    func setPreset(_ preset: EarthProjectExportPreset, variantID: UUID)
-    {
-        guard !isBusy else { return }
-        choices[variantID] = preset.options
-    }
-
     func setOption(_ field: EarthProjectExportField, included: Bool, variantID: UUID)
     {
         guard !isBusy else { return }
@@ -104,6 +80,9 @@ final class EarthProjectExportViewModel
     func rename(_ record: EarthProjectExportRecord, to name: String)
     { updateHistory { [service] in try await service.rename(record, to: name) } }
 
+    func renameDraft(for record: EarthProjectExportRecord) -> EarthExportRenameViewModel
+    { EarthExportRenameViewModel(record: record, automaticName: { [service] in try await service.automaticName(for: record) }) }
+
     func delete(_ record: EarthProjectExportRecord)
     { updateHistory { [service] in try await service.delete(record) } }
 
@@ -133,7 +112,6 @@ final class EarthProjectExportViewModel
     {
         guard !isBusy, !isLoadingHistory else { return }
         let requestedOptions = options(for: variantID)
-        let requestedPreset = presetName(for: variantID)
         let job = UUID()
         jobID = job
         self.variantID = variantID
@@ -168,7 +146,7 @@ final class EarthProjectExportViewModel
                 }
                 guard let self else { return }
                 // A completed publication is durable even after a simultaneous Cancel.
-                status = result.infoWarning ?? "Exported \(requestedPreset.lowercased()) GLB"
+                status = result.infoWarning ?? "Exported GLB"
                 do { history = try await service.exports(); historyError = nil }
                 catch { historyError = error.localizedDescription }
             }

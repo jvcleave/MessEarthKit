@@ -138,6 +138,42 @@ actor EarthProjectStore
         try await updateEditor(id: id, title: title)
     }
 
+    /// Explicitly switch custom names back to automatic naming. A delayed city
+    /// lookup cannot overwrite a newer name or apply coordinates from an old area.
+    func restoreAutomaticLocationName(id: UUID, locationID: UUID) async throws -> EarthProjectRecord
+    {
+        try Task.checkCancellation()
+        let snapshot = try await record(id: id)
+        guard let original = snapshot.locations.first(where: { $0.id == locationID })
+        else { throw EarthProjectStoreError.locationNotFound }
+        let name = try await automaticLocationName(center: original.area.center)
+        try Task.checkCancellation()
+        return try await renameLocation(id: id, locationID: locationID, name: name, expectedName: original.name, expectedCenter: original.area.center)
+    }
+
+    func automaticLocationName(center: EarthGeographicOrigin) async throws -> EarthLocationName
+    {
+        let name = EarthLocationName.automatic(city: try await cityLookup(center))
+        try Task.checkCancellation()
+        try name.validate()
+        return name
+    }
+
+    func renameLocation(id: UUID, locationID: UUID, name: EarthLocationName, expectedName: EarthLocationName, expectedCenter: EarthGeographicOrigin) async throws -> EarthProjectRecord
+    {
+        try Task.checkCancellation()
+        try name.validate()
+        return try await mutate(id: id)
+        { record in
+            guard let index = record.locations.firstIndex(where: { $0.id == locationID })
+            else { throw EarthProjectStoreError.locationNotFound }
+            guard record.locations[index].name == expectedName,
+                  record.locations[index].area.center == expectedCenter
+            else { throw EarthProjectStoreError.changedLocation }
+            record.locations[index].name = name
+        }
+    }
+
     func updateEditor(id: UUID, title: String? = nil, searchAddress: String? = nil, locations: [UUID: EarthLocationEdit] = [:]) async throws -> EarthProjectRecord
     {
         var resolvedEdits = locations

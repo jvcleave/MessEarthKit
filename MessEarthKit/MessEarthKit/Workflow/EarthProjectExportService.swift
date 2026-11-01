@@ -35,16 +35,18 @@ actor EarthProjectExportService
     private let store: EarthProjectStore
     private let history: EarthProjectExportHistoryStore
     private let prepare: EarthProjectCaptureService.Prepare
+    private let cityLookup: EarthProjectStore.CityLookup
     private let exporter = EarthGLBExporter()
     private var isWorking = false
 
-    init(projectID: UUID, files: EarthAppFiles, store: EarthProjectStore, prepare: @escaping EarthProjectCaptureService.Prepare)
+    init(projectID: UUID, files: EarthAppFiles, store: EarthProjectStore, prepare: @escaping EarthProjectCaptureService.Prepare, cityLookup: @escaping EarthProjectStore.CityLookup = { try await EarthCityLookup().resolve(center: $0) })
     {
         self.projectID = projectID
         self.files = files
         self.store = store
         history = EarthProjectExportHistoryStore(projectID: projectID, files: files)
         self.prepare = prepare
+        self.cityLookup = cityLookup
     }
 
     func export(
@@ -183,6 +185,20 @@ actor EarthProjectExportService
         defer { isWorking = false }
         _ = try await history.rename(record, to: name)
         return try await exports()
+    }
+
+    func automaticName(for record: EarthProjectExportRecord) async throws -> String
+    {
+        guard try await history.records().contains(record) else { throw EarthAppFilesError.invalidMetadata }
+        let url = try await files.exportFileURL(projectID: projectID, record: record)
+        let access = try await files.accessForReading(url)
+        defer { withExtendedLifetime(access) {} }
+        let options = try await exporter.exportedOptions(fileURL: url)
+        let center = record.source.request.center
+        let name = EarthLocationName.automatic(city: try await cityLookup(center))
+        try Task.checkCancellation()
+        try name.validate()
+        return try await files.glbExportFileName(name: name.title(center: center), detail: record.detail, options: options)
     }
 
     func delete(_ record: EarthProjectExportRecord) async throws -> [EarthProjectExportItem]

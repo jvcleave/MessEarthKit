@@ -5,18 +5,21 @@ actor EarthModelPreparationService
 {
     private let appFiles: EarthAppFiles
     private let projectID: UUID
+    private let gate: EarthPreparationGate
 
-    init(appFiles: EarthAppFiles, projectID: UUID)
+    init(appFiles: EarthAppFiles, projectID: UUID, gate: EarthPreparationGate = EarthPreparationGate())
     {
         self.appFiles = appFiles
         self.projectID = projectID
+        self.gate = gate
     }
 
     func prepare(archive: EarthSourceArchive, profile: EarthPreparationProfile, progress: @escaping @Sendable (EarthPreparationProgress) -> Void) async throws -> EarthPreparedCollection
     {
         try await appFiles.validateArtifactDirectory(archive.directoryURL, projectID: projectID, kind: .sources)
         let directory = try await appFiles.newArtifactDirectory(projectID: projectID, kind: .prepared)
-        return try await EarthModelPreparer().prepare(archive: archive, directoryURL: directory, profile: profile, progress: progress)
+        return try await gate.run
+        { try await EarthModelPreparer().prepare(archive: archive, directoryURL: directory, profile: profile, progress: progress) }
     }
 
     /// Only the current project's catalogs are considered; malformed catalogs

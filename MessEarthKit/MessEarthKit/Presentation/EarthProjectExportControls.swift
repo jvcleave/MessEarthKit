@@ -7,22 +7,8 @@ struct EarthProjectExportControls: View
     let isDownloaded: Bool
     let canStartWork: Bool
     let startExport: () -> Void
-    @State private var requestedAction: ExportAction?
-    @State private var exportName = ""
-
-    private enum ExportAction
-    {
-        case rename(EarthProjectExportRecord), delete(EarthProjectExportRecord)
-
-        var title: String
-        {
-            switch self
-            {
-                case .rename: "Rename Export"
-                case .delete: "Delete Export?"
-            }
-        }
-    }
+    @State private var renameDraft: EarthExportRenameViewModel?
+    @State private var deletingExport: EarthProjectExportRecord?
 
     var body: some View
     {
@@ -33,11 +19,6 @@ struct EarthProjectExportControls: View
             Text("Export").font(.subheadline.bold())
             HStack
             {
-                Menu("Preset: \(export.presetName(for: variantID))")
-                {
-                    ForEach(EarthProjectExportPreset.allCases, id: \.self)
-                    { preset in Button(preset.rawValue) { export.setPreset(preset, variantID: variantID) } }
-                }.disabled(!canStartWork)
                 Button(exports.isEmpty ? "Export GLB" : "Export Again", action: startExport)
                     .disabled(!isDownloaded || !canStartWork || export.isLoadingHistory || export.historyError != nil)
                 if export.isLoadingHistory || export.isManagingHistory { ProgressView().controlSize(.small) }
@@ -82,10 +63,9 @@ struct EarthProjectExportControls: View
                     {
                         Button("Rename…")
                         {
-                            exportName = String(item.record.fileName.dropLast(4))
-                            requestedAction = .rename(item.record)
+                            renameDraft = export.renameDraft(for: item.record)
                         }.disabled(!item.fileIsAvailable || !canStartWork || export.isLoadingHistory)
-                        Button("Delete…", role: .destructive) { requestedAction = .delete(item.record) }
+                        Button("Delete…", role: .destructive) { deletingExport = item.record }
                             .disabled(!canStartWork || export.isLoadingHistory)
                         if item.fileIsAvailable
                         { Button("Show in Finder") { export.reveal(item.record) } }
@@ -103,28 +83,21 @@ struct EarthProjectExportControls: View
                     .disabled(!canStartWork || export.isLoadingHistory)
             }
         }
+        .sheet(item: $renameDraft)
+        { draft in
+            EarthExportRenameView(viewModel: draft, canRename: canStartWork)
+            { if canStartWork { export.rename(draft.record, to: draft.name) } }
+        }
         .alert(
-            requestedAction?.title ?? "Export",
-            isPresented: Binding(get: { requestedAction != nil }, set: { if !$0 { requestedAction = nil } }),
-            presenting: requestedAction
+            "Delete Export?",
+            isPresented: Binding(get: { deletingExport != nil }, set: { if !$0 { deletingExport = nil } }),
+            presenting: deletingExport
         )
-        { action in
-            switch action
-            {
-                case let .rename(record):
-                    TextField("Filename", text: $exportName)
-                    Button("Rename") { if canStartWork { export.rename(record, to: exportName) } }
-                        .disabled(exportName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                case let .delete(record):
-                    Button("Move to Trash", role: .destructive) { if canStartWork { export.delete(record) } }
-            }
+        { record in
+            Button("Move to Trash", role: .destructive) { if canStartWork { export.delete(record) } }
             Button("Cancel", role: .cancel) {}
-        } message: { action in
-            switch action
-            {
-                case .rename: Text("Rename the exported file and its optional information companion. The .glb extension is kept.")
-                case let .delete(record): Text("Move “\(record.fileName)” and its export folder to Trash and remove it from export history? The variant’s downloads and prepared models are kept. If the file is already missing, only its history entry and any remaining export folder are removed.")
-            }
+        } message: { record in
+            Text("Move “\(record.fileName)” and its export folder to Trash and remove it from export history? The variant’s downloads and prepared models are kept. If the file is already missing, only its history entry and any remaining export folder are removed.")
         }
     }
 }

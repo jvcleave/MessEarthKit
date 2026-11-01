@@ -11,35 +11,12 @@ struct EarthProjectCapturesView: View
     {
         ForEach(project.locations)
         { location in
-            Section(location.displayTitle)
-            {
-                HStack
-                {
-                    Text(project.areaAdjustment?.locationID == location.id ? "Editing area" : location.isFrozen ? "Frozen area" : "Draft area").font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Show on Map") { project.showLocation(location.id) }.disabled(!library.canStartWork)
-                    Button("Duplicate") { project.copyLocation(location.id) }.disabled(!library.canStartWork)
-                    Button(role: .destructive) { library.requestLocationDeletion(project.id, locationID: location.id) } label: { Image(systemName: "trash") }
-                        .buttonStyle(.borderless).help("Delete Location").accessibilityLabel("Delete location \(location.displayTitle)")
-                        .disabled(!library.canRequestDeletion || project.isSaving)
-                }
-                if location.id == project.editingLocationID, let editingLocation = project.editingLocation
-                {
-                    EarthLocationEditorView(location: editingLocation, project: project, library: library)
-                }
-                else { Text("\(location.area.widthMeters) × \(location.area.heightMeters) m").font(.caption) }
-                if !location.variants.isEmpty
-                {
-                    Text("Variants").font(.headline)
-                    ForEach(location.variants.reversed())
-                    { variant in EarthProjectCaptureCard(variant: variant, project: project, library: library) }
-                }
-            }
+            EarthProjectLocationView(location: location, project: project, library: library)
         }
     }
 }
 
-private struct EarthProjectCaptureCard: View
+struct EarthProjectCaptureCard: View
 {
     let variant: EarthProjectCaptureVariant
     let project: EarthProjectViewModel
@@ -55,15 +32,16 @@ private struct EarthProjectCaptureCard: View
                 Spacer()
                 Button(role: .destructive) { library.requestCaptureDeletion(project.id, captureID: variant.id) } label: { Image(systemName: "trash") }
                     .buttonStyle(.borderless).help("Delete Variant").accessibilityLabel("Delete variant \(variant.title)")
-                    .disabled(!library.canRequestDeletion || project.isSaving)
+                    .disabled(!library.canDeleteCapture(project.id, captureID: variant.id))
             }
             Picker("Detail", selection: Binding(get: { variant.detail }, set: { project.setVariantDetail($0, captureID: variant.id) }))
             { ForEach(EarthProjectDetail.allCases) { Text($0.title).tag($0) } }
             .disabled(!project.canChangeVariantDetail(variant.id) || !library.canStartWork)
-            if let archive = project.captureStatuses[variant.id]?.archive, archive.state != .downloaded
+            if let archive = project.captureStatuses[variant.id]?.archive, archive.state != .downloaded,
+               project.downloadJob(variant.id)?.phase.isActive != true
             {
                 Button(archive.sourceRequests == 0 ? "Download" : "Resume Download") { library.download(project.id, captureID: variant.id) }
-                    .disabled(project.areaAdjustment != nil || !library.canStartWork || !project.hasAPIKey)
+                    .disabled(!library.canStartWork || !project.canDownload(variant.id))
             }
             HStack(alignment: .firstTextBaseline, spacing: 4)
             {
@@ -74,16 +52,7 @@ private struct EarthProjectCaptureCard: View
             .lineLimit(1)
             if let error = project.captureError(variant.id)
             { EarthErrorMessage(error) }
-            if project.operationCaptureID == variant.id, project.phase != .idle
-            {
-                ProgressView(project.progressText).controlSize(.small)
-                if project.phase != .deleting { Button(project.phase == .downloading ? "Pause Download" : "Cancel", action: project.pause) }
-            }
-            else if project.selectedCaptureID == variant.id, project.preview.isLoading
-            {
-                ProgressView(project.preview.status).controlSize(.small)
-                Button("Cancel Preview", action: project.pause)
-            }
+            EarthProjectCaptureProgressView(captureID: variant.id, project: project)
             HStack
             {
                 if let archive = project.captureStatuses[variant.id]?.archive, archive.completedPayloadCount > 0
@@ -97,15 +66,45 @@ private struct EarthProjectCaptureCard: View
                 }
                 else { Button("Preview", action: {}).disabled(true) }
             }
-            EarthProjectExportControls(
-                export: project.export,
-                variantID: variant.id,
-                isDownloaded: project.captureStatuses[variant.id]?.archive?.state == .downloaded,
-                canStartWork: library.canStartWork && !project.isBusy,
-                startExport: { project.exportVariant(variant.id) }
-            )
+            if project.captureStatuses[variant.id]?.archive?.state == .downloaded
+            {
+                EarthProjectExportControls(
+                    export: project.export,
+                    variantID: variant.id,
+                    isDownloaded: true,
+                    canStartWork: library.canStartWork && !project.isBusy && project.downloadJob(variant.id)?.phase.isActive != true,
+                    startExport: { project.exportVariant(variant.id) }
+                )
+            }
         }
         .buttonStyle(.bordered)
         .padding(.vertical, 6)
+    }
+}
+
+/// Both expanded cards and collapsed locations expose the same progress actions.
+struct EarthProjectCaptureProgressView: View
+{
+    let captureID: UUID
+    let project: EarthProjectViewModel
+
+    var body: some View
+    {
+        if let job = project.downloadJob(captureID), job.phase.isActive
+        {
+            ProgressView(job.progressText).controlSize(.small)
+            Button(job.phase == .queued ? "Remove from Queue" : job.phase == .downloading ? "Pause Download" : "Cancel")
+            { project.pauseDownload(captureID) }.disabled(job.phase == .stopping)
+        }
+        else if project.operationCaptureID == captureID, project.phase != .idle
+        {
+            ProgressView(project.progressText).controlSize(.small)
+            if project.phase != .deleting { Button(project.phase == .downloading ? "Pause Download" : "Cancel", action: project.pause) }
+        }
+        else if project.selectedCaptureID == captureID, project.preview.isLoading
+        {
+            ProgressView(project.preview.status).controlSize(.small)
+            Button("Cancel Preview", action: project.pause)
+        }
     }
 }

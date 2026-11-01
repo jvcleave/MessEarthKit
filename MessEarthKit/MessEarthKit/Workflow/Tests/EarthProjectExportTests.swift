@@ -2,12 +2,19 @@ import Foundation
 @testable import MessEarthKit
 import Testing
 
-private func projectExportService(files: EarthAppFiles, store: EarthProjectStore, projectID: UUID) -> EarthProjectExportService
+private func projectExportService(files: EarthAppFiles, store: EarthProjectStore, projectID: UUID, cityLookup: @escaping EarthProjectStore.CityLookup = { _ in throw EarthLocationNamingError.cityUnavailable }) -> EarthProjectExportService
 {
     EarthProjectExportService(projectID: projectID, files: files, store: store, prepare: { archive, profile, progress in
         let directory = try await files.newArtifactDirectory(projectID: projectID, kind: .prepared)
         return try await EarthModelPreparer().prepare(archive: archive, directoryURL: directory, profile: profile, progress: progress)
-    })
+    }, cityLookup: cityLookup)
+}
+
+@MainActor private func settleRename(_ draft: EarthExportRenameViewModel) async throws
+{
+    let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+    while draft.isResolving, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+    try #require(!draft.isResolving)
 }
 
 @MainActor private func settleExport(_ export: EarthProjectExportViewModel) async throws
@@ -24,7 +31,7 @@ private enum ProjectExportChoice: CaseIterable, Sendable
 }
 
 // Existing authored fixture covers naming, exact identity and shared placement.
-// Exercise preset/dependency choices through the real job and immutable output;
+// Exercise toggle/dependency choices through the real job and immutable output;
 // changing controls mid-job and cancellation cannot alter the published export.
 @Test(arguments: ProjectExportChoice.allCases)
 @MainActor private func projectExportPreservesNamedCaptureAndOptions(choice: ProjectExportChoice) async throws
@@ -60,18 +67,20 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     let export = EarthProjectExportViewModel(service: service)
     switch choice
     {
-        case .full: export.setPreset(.full, variantID: variantID)
-        case .untextured: export.setPreset(.untextured, variantID: variantID)
-        case .minimal: export.setPreset(.minimal, variantID: variantID)
-        case .custom:
-            export.setPreset(.minimal, variantID: variantID)
-            export.setOption(.textures, included: true, variantID: variantID)
-            export.setOption(.materials, included: false, variantID: variantID)
-            #expect(!export.options(for: variantID).includeTextures)
-            export.setOption(.textures, included: true, variantID: variantID)
-            export.setOption(.textureCoordinates, included: false, variantID: variantID)
-            #expect(!export.options(for: variantID).includeTextures)
-            export.setOption(.textures, included: true, variantID: variantID)
+        case .full: break
+        case .untextured: export.setOption(.textures, included: false, variantID: variantID)
+        case .minimal, .custom:
+            for field in EarthProjectExportField.allCases { export.setOption(field, included: false, variantID: variantID) }
+    }
+    if choice == .custom
+    {
+        export.setOption(.textures, included: true, variantID: variantID)
+        export.setOption(.materials, included: false, variantID: variantID)
+        #expect(!export.options(for: variantID).includeTextures)
+        export.setOption(.textures, included: true, variantID: variantID)
+        export.setOption(.textureCoordinates, included: false, variantID: variantID)
+        #expect(!export.options(for: variantID).includeTextures)
+        export.setOption(.textures, included: true, variantID: variantID)
     }
     let options: EarthGLBExportOptions
     switch choice
@@ -278,14 +287,30 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     try await files.initialize()
     let store = EarthProjectStore(files: files)
     let project = try await store.create()
-    let raw = try await projectSourceFixture(files: files, projectID: project.id)
+    let center = try EarthGeographicOrigin(latitude: 41.87811347, longitude: -87.62980539)
+    let raw = try await projectSourceFixture(files: files, projectID: project.id, origin: center)
     let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
-    let service = projectExportService(files: files, store: store, projectID: project.id)
+    let service = projectExportService(files: files, store: store, projectID: project.id, cityLookup: { point in
+        #expect(point == center)
+        return "Chicago"
+    })
     let result = try await service.export(variantID: #require(registered.selectedCaptureID), options: .untextured, progress: { _ in })
+    _ = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 40.7, longitude: -74), title: "Elsewhere")
     let before = try await store.record(id: project.id)
     let metadata = try #require(try await files.readMetadata(.exports(project.id)))
     let bytes = try Data(contentsOf: result.fileURL)
     let infoBytes = try Data(contentsOf: EarthGLBInfo.companionURL(result.fileURL))
+    let export = EarthProjectExportViewModel(service: service)
+    let draft = export.renameDraft(for: result.output)
+    draft.useAutomaticName()
+    try await settleRename(draft)
+    #expect(draft.name == "Chicago_41.87811_-87.62981_Standard_geom_norm_vcol_uv_mat")
+    #expect(try await files.readMetadata(.exports(project.id)) == metadata)
+    #expect(try Data(contentsOf: result.fileURL) == bytes)
+    let unavailable = EarthExportRenameViewModel(record: result.output, automaticName: { throw EarthLocationNamingError.cityUnavailable })
+    unavailable.useAutomaticName()
+    try await settleRename(unavailable)
+    #expect(unavailable.errorMessage != nil && unavailable.name == String(result.output.fileName.dropLast(4)))
     await #expect(throws: EarthAppFilesError.invalidExportName)
     { try await service.rename(result.output, to: "../Escaping") }
     let collision = result.fileURL.deletingLastPathComponent().appendingPathComponent("Existing.glb.info.json")
@@ -300,8 +325,8 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     #expect(try await files.readMetadata(.exports(project.id)) == metadata)
     #expect(try Data(contentsOf: result.fileURL) == bytes)
     #expect(try Data(contentsOf: EarthGLBInfo.companionURL(result.fileURL)) == infoBytes)
-    let export = EarthProjectExportViewModel(service: service)
-    export.rename(result.output, to: "City Model.GLB")
+    draft.setName("City Model.GLB")
+    export.rename(result.output, to: draft.name)
     #expect(export.isBusy && export.isManagingHistory)
     // A second action cannot act on stale history while the first is pending.
     export.delete(result.output)
@@ -329,6 +354,13 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     #expect(reopenedItems.map(\.record) == [withoutCompanion])
     #expect(reopenedItems.first?.exportedOptions == .untextured && reopenedItems.first?.contentsError == nil)
     #expect(try await store.record(id: project.id) == before)
+    // Reuse the authored source GLB to represent an older output without the
+    // newer channel metadata. Auto must not invent tags from current toggles.
+    let legacyTile = try #require(FileManager.default.contentsOfDirectory(at: raw.directoryURL.appendingPathComponent("tiles"), includingPropertiesForKeys: nil).first { $0.pathExtension == "glb" })
+    let legacyBytes = try Data(contentsOf: legacyTile)
+    try legacyBytes.write(to: withoutCompanionURL)
+    #expect(try await service.automaticName(for: withoutCompanion) == "Chicago_41.87811_-87.62981_Standard.glb")
+    #expect(try Data(contentsOf: withoutCompanionURL) == legacyBytes)
 }
 
 private enum ExportDeletionCase: CaseIterable, Sendable { case available, missing, trashFailure, escapingOutput }

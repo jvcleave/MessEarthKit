@@ -253,6 +253,50 @@ func flatNormalFixture(positions: [SIMD3<Float>], indices: [UInt32], transform: 
     #expect(capture.sourceFiles.first?.data == source)
 }
 
+private func flatNormalTileset(uris: [String]) throws -> EarthSourceFile
+{
+    let bounds: [String: Any] = ["sphere": [0, 0, 0, 10]]
+    let json: [String: Any] = [
+        "asset": ["version": "1.1"],
+        "root": [
+            "boundingVolume": bounds, "geometricError": 0,
+            "transform": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 6378137, 0, 0, 1],
+            "children": uris.map { ["boundingVolume": bounds, "geometricError": 0, "content": ["uri": $0]] },
+        ],
+    ]
+    return EarthSourceFile(relativePath: "tileset.json", data: try JSONSerialization.data(withJSONObject: json))
+}
+
+@Test(arguments: [false, true])
+func tilesetRetainsGeometryBesideDegenerateOnlyTiles(degenerateFirst: Bool) async throws
+{
+    let valid = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0)], indices: [0, 1, 2])
+    let degenerate = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(2, 0, 0)], indices: [0, 0, 1, 0, 1, 2])
+    let uris = degenerateFirst ? ["degenerate.glb", "valid.glb", "degenerate.glb"] : ["valid.glb", "degenerate.glb", "degenerate.glb"]
+    let files = try [flatNormalTileset(uris: uris), EarthSourceFile(relativePath: "valid.glb", data: valid), EarthSourceFile(relativePath: "degenerate.glb", data: degenerate)]
+    let capture = try await EarthCaptureImporter().importSourceFiles(sourceFiles: files, rootSourcePath: "tileset.json")
+    #expect(capture.triangleCount == 1 && capture.vertexCount == 3)
+    #expect(capture.omittedDegenerateTriangleCount == 4)
+    #expect(simd_distance(capture.bounds.minimum, SIMD3(0, 0, -1)) < 0.0001)
+    #expect(simd_distance(capture.bounds.maximum, SIMD3(0, 1, 0)) < 0.0001)
+    #expect(capture.sourceFiles.count == 3)
+    #expect(capture.sourceFiles.first { $0.relativePath == "degenerate.glb" }?.data == degenerate)
+    #expect(capture.sourceFiles.first { $0.relativePath == "valid.glb" }?.data == valid)
+}
+
+@Test func tilesetRejectsEntirelyDegenerateCaptureAndCorruptSiblingContent() async throws
+{
+    let degenerate = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(2, 0, 0)], indices: [0, 1, 2])
+    let valid = try flatNormalFixture(positions: [.zero, SIMD3(1, 0, 0), SIMD3(0, 1, 0)], indices: [0, 1, 2])
+    let importer = EarthCaptureImporter()
+    let emptyFiles = try [flatNormalTileset(uris: ["degenerate.glb"]), EarthSourceFile(relativePath: "degenerate.glb", data: degenerate)]
+    await #expect(throws: EarthImportError.self)
+    { try await importer.importSourceFiles(sourceFiles: emptyFiles, rootSourcePath: "tileset.json") }
+    let corruptFiles = try [flatNormalTileset(uris: ["valid.glb", "corrupt.glb"]), EarthSourceFile(relativePath: "valid.glb", data: valid), EarthSourceFile(relativePath: "corrupt.glb", data: Data("invalid GLB".utf8))]
+    await #expect(throws: EarthImportError.self)
+    { try await importer.importSourceFiles(sourceFiles: corruptFiles, rootSourcePath: "tileset.json") }
+}
+
 private enum FlatNormalPrecision: CaseIterable, Sendable { case tiny, translated, reflected }
 
 @Test(arguments: FlatNormalPrecision.allCases)

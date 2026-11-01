@@ -11,8 +11,13 @@ struct EarthLocationEditorView: View
     {
         Group
         {
-            TextField("Name", text: Binding(get: { project.editingLocation?.title ?? "" }, set: project.setLocationTitle))
-                .disabled(project.areaAdjustment != nil)
+            HStack
+            {
+                TextField("Name", text: Binding(get: { project.editingLocation?.title ?? "" }, set: project.setLocationTitle))
+                Button("Auto", action: project.restoreAutomaticLocationName)
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .help("Restore automatic city and coordinate naming for this location.")
+            }.disabled(project.areaAdjustment != nil)
             Group
             {
                 TextField("Width (m)", text: Binding(get: { project.displayedLocationArea?.widthMeters ?? "" }, set: project.setWidth))
@@ -42,6 +47,6 @@ struct EarthLocationEditorView: View
                     .disabled(!project.canAddVariant || !library.canStartWork)
             }
         }
-        .disabled(project.isBusy || !library.canStartWork)
+        .disabled(project.isBusy || !project.canEditCurrentLocation || !library.canStartWork)
     }
 }

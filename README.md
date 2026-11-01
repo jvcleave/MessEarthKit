@@ -54,7 +54,9 @@ Edits save automatically. Projects are stored under
 
 1. Enter an address and choose **Update Map**, or pan and zoom to your area.
 2. Choose **Add Location**. The new location uses the current map centre.
-3. Keep its automatic city/coordinate name or enter your own name.
+3. Keep its automatic city/coordinate name or enter your own name. Every location
+   header offers **Rename…**, including collapsed and existing locations. In that
+   dialog, enter a name or choose **Auto**, then **Rename** to save it.
 4. Set **Width (m)** and **Height (m)**. You can also move or resize the map box,
    or use **Draw Area** to draw a new rectangle. Choose **Done** when finished.
 5. Choose **Add Variant**, then select that variant's **Detail**.
@@ -64,17 +66,28 @@ Edits save automatically. Projects are stored under
 
 Adding a location or variant does not download Google tiles. **Download** starts
 acquisition for that variant's saved area and detail. Use **Pause Download** and
-**Resume Download** if needed. Completed downloads prepare models offline.
+**Resume Download** if needed. Up to two variants download at once across all
+projects; additional downloads wait in a queue. Each variant has independent
+progress and pause/cancel controls, and jobs continue while you navigate.
+Completed downloads prepare models offline, one preparation at a time. Queued
+jobs stay in memory for this app session; after relaunch, use **Resume Download**
+to restart incomplete work.
 
 Add another variant to capture a different detail level. Detail locks once a
 variant starts downloading. **Adjust Area** can update all pending variants
 before any completes; afterward, use **Duplicate** for a different area.
 Whole intersecting tiles can extend beyond the drawn rectangle.
 
+Use the arrow beside a location's name to expand or collapse it independently.
+Collapsed locations show their dimensions and variant count, active progress
+and pause/cancel controls, and an indicator for errors. The current location
+starts expanded; new and duplicated locations expand automatically. Expansion
+choices are remembered while navigating the app and reset when it restarts.
+
 ## Preview
 
-Choose **Preview** on a downloaded variant. If preparation is still running, it
-continues before the model is displayed.
+Choose **Preview** after a downloaded variant finishes preparing. If preparation
+was cancelled or failed, Preview can retry it offline.
 
 The **Display** menu offers:
 
@@ -101,29 +114,32 @@ Preview choices do not change downloaded files or export options.
 ## Export
 
 1. Return to the project's variant cards and find the variant you want to export.
-2. In its **Export** section, choose a preset or adjust the checkboxes.
+2. In its **Export** section, choose the included contents with the checkboxes.
+   Export appears after the download is complete and becomes available when the
+   queued preparation finishes or is cancelled.
 3. Choose **Export GLB**. Preparation runs offline first if needed.
 4. Choose **Show Export in Finder** beside the completed export.
 
-| Preset | Included data |
-| --- | --- |
-| **Full** | Positions, triangle indices, normals, vertex colors, UVs, materials and texture images. |
-| **Untextured** | The same vertex data and materials, without texture images. |
-| **Minimal** | Positions and triangle indices. |
-
-Normals, vertex colors, UV coordinates, materials and texture images can also be
-selected individually. Enabling textures enables UVs and materials. Placement,
-capture identity and attribution are always retained.
+The toggles select normals, vertex colors, UV coordinates, materials and texture
+images; all start enabled. Positions and triangle indices are always included.
+Enabling textures enables UVs and materials; disabling either UVs or materials
+also disables textures. Placement, capture identity and attribution are always
+retained.
 
 Filenames include the selected contents. For example,
 `Chicago_Standard_geom_norm_vcol_uv_mat_tex.glb` contains geometry (`geom`,
 positions and triangle indices), normals (`norm`), vertex colors (`vcol`), UVs,
 materials (`mat`) and texture images (`tex`). Omitted channels have no tag;
-Minimal ends in `_geom.glb`.
+geometry-only exports end in `_geom.glb`.
 
 Exports are saved in the project's `output/<export UUID>/` folder. **Export
 Again** creates another file and keeps earlier exports in the history. Export
 does not require the whole capture to fit in Preview.
+
+Choose **Rename… → Auto** to fill a city/latitude/longitude filename from that
+export's saved capture location, including exports with older or custom names.
+You can edit the suggestion before choosing **Rename**. The optional information
+companion moves with the GLB; its contents and captured identity stay unchanged.
 
 New app exports also include an optional `.glb.info.json` companion with model
 statistics, attribution and a small PNG thumbnail. Keep it beside the GLB for
@@ -146,8 +162,8 @@ These public Swift APIs return CPU assets for your app to convert and render. Se
 
 For GLB appearance, the consumer should handle embedded PNG/JPEG images, unlit
 materials and vertex-color tinting when present. An export without normals needs
-normals generated if the app uses lighting. Minimal exports need the consumer's
-default surface appearance. See the [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
+normals generated if the app uses lighting. Exports without materials need the
+consumer's default surface appearance. See the [glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html).
 
 Local importing and rendering do not need a Google key. Once converted to an
 app's own geometry, materials and textures, normal rendering does not need the

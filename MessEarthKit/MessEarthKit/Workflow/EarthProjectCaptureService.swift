@@ -85,11 +85,12 @@ actor EarthProjectCaptureService
         return archive
     }
 
-    func download(archive: EarthSourceArchive, apiKey: String, progress: @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthSourceArchive
+    func download(variantID: UUID? = nil, archive: EarthSourceArchive, apiKey: String, progress: @escaping @Sendable (EarthCaptureProgress) -> Void) async throws -> EarthSourceArchive
     {
-        try await requireCurrent(archive)
+        let variantID = try await resolveVariantID(variantID)
+        try await requireVariant(archive, variantID: variantID)
         let completed = try await acquire(archive, apiKey, progress)
-        try await requireCurrent(completed)
+        try await requireVariant(completed, variantID: variantID)
         return completed
     }
 
@@ -114,28 +115,36 @@ actor EarthProjectCaptureService
         await files.reveal(url)
     }
 
-    func prepareModels(archive: EarthSourceArchive, progress: @escaping @Sendable (EarthPreparationProgress) -> Void) async throws -> EarthPreparedCollection
+    func prepareModels(variantID: UUID? = nil, archive: EarthSourceArchive, progress: @escaping @Sendable (EarthPreparationProgress) -> Void) async throws -> EarthPreparedCollection
     {
-        try await requireCurrent(archive)
+        let variantID = try await resolveVariantID(variantID)
+        try await requireVariant(archive, variantID: variantID)
         let profile = try EarthPreparationProfile(name: "Project preview")
-        let current = try await store.open(id: id)
+        let current = try await store.openVariant(id: id, variantID: variantID)
         if let ready = current.prepared, ready.state == .ready, ready.profile == profile { return ready }
         let result = try await prepare(archive, profile, progress)
         try Task.checkCancellation()
-        try await requireCurrent(archive)
+        try await requireVariant(archive, variantID: variantID)
         guard let preparationID = UUID(uuidString: result.directoryURL.lastPathComponent),
-              let captureID = UUID(uuidString: archive.directoryURL.lastPathComponent),
-              let variantID = current.record.selectedCaptureID
+              let captureID = UUID(uuidString: archive.directoryURL.lastPathComponent)
         else { throw EarthAppFilesError.invalidLocation }
         _ = try await store.recordPreparation(id: id, variantID: variantID, preparation: .init(id: preparationID, captureID: captureID, profile: result.profile))
         return result
     }
 
-    private func requireCurrent(_ archive: EarthSourceArchive) async throws
+    private func resolveVariantID(_ variantID: UUID?) async throws -> UUID
+    {
+        if let variantID { return variantID }
+        guard let selected = try await store.record(id: id).selectedCaptureID else { throw EarthProjectStoreError.captureNotFound }
+        return selected
+    }
+
+    private func requireVariant(_ archive: EarthSourceArchive, variantID: UUID) async throws
     {
         try await files.validateArtifactDirectory(archive.directoryURL, projectID: id, kind: .sources)
         let record = try await store.record(id: id)
-        guard record.currentCapture?.id.uuidString == archive.directoryURL.lastPathComponent,
-              record.currentCapture?.request == archive.request else { throw EarthProjectStoreError.sourceMismatch }
+        guard let variant = record.captures.first(where: { $0.id == variantID }),
+              variant.capture.id.uuidString == archive.directoryURL.lastPathComponent,
+              variant.capture.request == archive.request else { throw EarthProjectStoreError.sourceMismatch }
     }
 }

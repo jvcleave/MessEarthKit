@@ -302,8 +302,11 @@ derive their frame from bounding volumes.
 When source normals are absent, flat normals use double-precision source edges
 before output-position rounding and the inverse-transpose node transform.
 Exactly zero-area source triangles are omitted individually during this step;
-small nonzero triangles remain. Scenes without usable triangles and malformed or
-non-finite attributes fail explicitly. Raw GLBs remain unchanged.
+small nonzero triangles remain. A tileset payload containing only such omitted
+triangles contributes its omission count without blocking usable geometry in
+other payloads. Standalone GLBs and tileset imports without usable
+triangles still fail, as do empty scenes and malformed or non-finite attributes.
+Raw GLBs remain unchanged.
 
 `EarthCapture.omittedDegenerateTriangleCount` reports omissions, also retained in
 derivative/combined GLB extras as `messEarthKitOmittedDegenerateTriangleCount`.
@@ -471,6 +474,19 @@ independent title/search state, locations with automatic/custom names and
 center/dimensions, permanent frozen timestamps, nested detail variants, editing
 location ID and an independent active capture ID.
 
+The location editor's **Auto** button restores persistent automatic naming for
+existing locations, including custom-named and frozen locations. It resolves the
+city at that location's saved centre and displays latitude/longitude to five
+decimal places. Later centre changes update automatic names; manual edits restore
+custom naming. Lookup failure leaves the name intact, and stale lookup results
+cannot overwrite a later name or centre change. The operation changes no capture
+requests, downloaded files, prepared models or existing exports.
+
+Every location header also offers **Rename…** independently of expansion and map
+selection. Its dialog accepts a custom name or an **Auto** suggestion, and only
+the **Rename** action saves the draft. Saving validates the original name and
+centre before changing that location's name, and does not select it on the map.
+
 Each variant owns its stable ID, current request/source/prepared reference and
 earlier source attempts. Registration freezes a location and pins a source
 atomically. Applying an area edit updates all pending variants together while
@@ -478,6 +494,35 @@ preserving IDs and earlier files; any completed capture locks the area. Confirme
 variant/location deletion includes every recorded attempt. Copies never reuse
 source/prepared references. Title/search/location edits serialize, and activation
 cannot overwrite a location draft.
+
+Location expansion is session-only presentation state retained by each project
+view model across navigation. The editing location starts expanded, other
+existing locations start collapsed, and new or duplicated locations expand
+without closing others. Refresh preserves choices for surviving location IDs;
+deletion removes their expansion state. Collapsing does not change map selection
+or job lifetime. Collapsed sections retain active progress/cancellation and an
+error indicator. Expansion choices do not enter project metadata.
+
+The library retains one download queue with two acquisition slots across all
+projects and FIFO admission for additional variants. Each queued job pins its
+project, variant and source attempt IDs, with its own task, progress, error and
+pause/cancel action. A worker's slot is released after it stops. Completion and
+preparation validate and update that variant without changing selection or
+pending location edits. A cancelled queue entry never starts acquisition.
+
+One preparation slot serves the download queue. A shared worker gate also
+serializes native preparation with manual preview and export preparation. A
+finished download releases its network slot before waiting for preparation.
+The source becomes available for export after download; controls stay disabled
+while its automatic preparation remains active. Export is hidden for incomplete
+sources. Editing source detail/area and deleting active variants, their locations
+or projects are refused; unrelated locations/projects remain usable.
+
+The queue is session-only. Incomplete archives retain SDK checkpoints across
+launches and resume only on an explicit action. Starting or resuming clears the
+variant's previous job error and suppresses its old archive interruption while
+the queued attempt is active. Fresh failures appear normally; other variants
+keep their diagnostics. Late progress from earlier attempts is ignored.
 
 Neither format stores credentials. Unknown versions and missing required keys
 fail explicitly. The app has no runtime old-format reader, automatic migration
@@ -504,13 +549,21 @@ macOS Trash and removes its history entry. Missing files can also be removed
 from history. Both actions leave the variant's source and prepared models intact.
 See [storage lifetimes and failure handling](APP_STORAGE.md#source-preparation-and-export-lifetimes).
 
+The rename sheet's **Auto** action resolves the city at the export record's
+immutable capture centre and fills an editable city/coordinate/detail filename.
+Content tags come from the exported GLB's recorded options; older files without
+those options omit the tags. Auto only prepares a draft: the current map,
+location name, files and export history do not change until Rename is chosen.
+Failed lookup retains the existing draft and shows an error. Dismissal or manual
+editing cancels the lookup and rejects late results.
+
 Export history retains its schema and texture flag; detailed channel choices
 are stored in each new GLB. Each history entry lists its recorded geometry,
 normals, vertex colors, UV coordinates, materials and textures. The app reads
 those choices from the GLB's bounded JSON header through
 `EarthGLBExporter.exportedOptions(fileURL:)`, without decoding geometry or relying
-on its filename or the current preset. Missing files or absent choices display
-unavailable contents; malformed output metadata reports a per-file error without
+on its filename or the current toggle settings. Missing files or absent choices
+display unavailable contents; malformed output metadata reports a per-file error without
 discarding history. The optional information companion is not required.
 
 ### Preview ownership

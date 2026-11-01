@@ -155,14 +155,14 @@ private func projectLocationFreezesBeforeTransferAndPreparesOffline(outcome: Pro
             if outcome == .paused, attempt == 1 { throw CancellationError() }
             if outcome == .noCoverage { throw EarthCaptureError.noCoverage }
             if outcome == .detailUnavailable { throw EarthCaptureError.detailUnavailable }
-            let completed = try await projectSourceFixture(files: files, projectID: project.id, existing: archive)
             if outcome == .replacedSource
             {
-                let url = try await files.newArtifactDirectory(projectID: project.id, kind: .sources)
-                let replacement = try await EarthSourceArchive.create(request: archive.request, directoryURL: url)
-                _ = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: replacement)
+                let locationID = try #require(pinned.record.captureLocation?.id)
+                var adjustment = try await store.areaAdjustment(id: project.id, locationID: locationID)
+                adjustment.area.widthMeters = "600"
+                _ = try await store.applyAreaAdjustment(id: project.id, adjustment: adjustment)
             }
-            return completed
+            return try await projectSourceFixture(files: files, projectID: project.id, existing: archive)
         },
         prepare: { archive, profile, progress in
             if outcome == .preparationFailure { throw ProjectFixtureFailure.preparation }
