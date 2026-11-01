@@ -120,6 +120,7 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     if options.includeTextures { #expect(imported.materials.contains { $0.baseColorTexture != nil }) }
     else { #expect(imported.materials.allSatisfy { $0.baseColorTexture == nil }) }
     #expect(imported.identity == (try EarthCaptureIdentity(locationName: edit.title, request: raw.request, detailName: "standard")))
+    #expect(info.geographicOrigin == center && info.captureIdentity == imported.identity)
     let json = try EarthGLBDecoder(limits: EarthImportLimits()).preflight(data: Data(contentsOf: target))
     let extras = try #require(json["extras"] as? [String: Any])
     let recordedOptions = try JSONSerialization.data(withJSONObject: #require(extras["messEarthKitExportOptions"]))

@@ -15,7 +15,8 @@ func combinedGLBInfoBindsTheExactStandaloneAsset(options: EarthGLBExportOptions)
     let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
     let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
     let exporter = EarthGLBExporter()
-    let plan = try await exporter.preflight(collection: collection, destination: profile, options: options)
+    let identity = options.includeTextures ? try EarthCaptureIdentity(locationName: "Named capture", request: raw.request, detailName: "standard") : nil
+    let plan = try await exporter.preflight(collection: collection, destination: profile, options: options, identity: identity)
     let plain = try await exporter.export(plan: plan, fileURL: parent.appendingPathComponent("plain.glb"))
     #expect(!FileManager.default.fileExists(atPath: EarthGLBInfo.companionURL(plain).path))
     let sample = try await collection.importModel(id: 1)
@@ -26,6 +27,7 @@ func combinedGLBInfoBindsTheExactStandaloneAsset(options: EarthGLBExportOptions)
     let bytes = try Data(contentsOf: result.fileURL)
     #expect(bytes == (try Data(contentsOf: plain)))
     let info = try EarthGLBInfo.decode(Data(contentsOf: #require(result.infoURL)))
+    #expect(info.geographicOrigin == raw.request.center && info.captureIdentity == identity)
     #expect(info.thumbnail?.data == (options.includeTextures ? thumbnail.data : nil))
     #expect(info.glb.byteCount == bytes.count && info.glb.sha256 == SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined())
     #expect(info.geometry.triangleCount == 28 && info.geometry.meshCount == 4)
@@ -35,6 +37,27 @@ func combinedGLBInfoBindsTheExactStandaloneAsset(options: EarthGLBExportOptions)
     #expect(info.exportOptions == options && (info.geometry.textureCount > 0) == options.includeTextures)
     #expect((info.geometry.materialCount > 0) == options.includeMaterials)
     var json = try #require(JSONSerialization.jsonObject(with: info.encoded()) as? [String: Any])
+    if let identity
+    {
+        var invalidOrigin = json
+        invalidOrigin["geographicOrigin"] = ["latitude": 91, "longitude": 0, "ellipsoidHeight": 0]
+        #expect(throws: (any Error).self) { try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: invalidOrigin)) }
+        // A valid but different origin must not contradict the captured area.
+        invalidOrigin["geographicOrigin"] = ["latitude": 1, "longitude": 0, "ellipsoidHeight": 0]
+        #expect(throws: EarthGLBInfoError.self) { try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: invalidOrigin)) }
+        var invalidIdentity = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(identity)) as? [String: Any])
+        var request = try #require(invalidIdentity["request"] as? [String: Any])
+        request["widthMeters"] = -1
+        invalidIdentity["request"] = request
+        var invalidArea = json
+        invalidArea["captureIdentity"] = invalidIdentity
+        #expect(throws: (any Error).self) { try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: invalidArea)) }
+        var older = json
+        older.removeValue(forKey: "geographicOrigin")
+        older.removeValue(forKey: "captureIdentity")
+        let restored = try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: older))
+        #expect(restored.geographicOrigin == nil && restored.captureIdentity == nil)
+    }
     json["schemaVersion"] = 99
     #expect(throws: EarthGLBInfoError.self) { try EarthGLBInfo.decode(JSONSerialization.data(withJSONObject: json)) }
 }

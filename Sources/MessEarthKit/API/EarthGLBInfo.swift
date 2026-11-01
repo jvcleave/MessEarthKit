@@ -11,6 +11,11 @@ public struct EarthGLBInfo: Codable, Sendable
     public let geometry: Geometry
     public let exportOptions: EarthGLBExportOptions
     public let attributions: [String]
+    /// WGS84 origin of local geometry. Nil in companions written before location
+    /// metadata was added; new exports always include it at Double precision.
+    public let geographicOrigin: EarthGeographicOrigin?
+    /// Saved name, request/area and detail when supplied during export preflight.
+    public let captureIdentity: EarthCaptureIdentity?
     public let thumbnail: Thumbnail?
 
     public struct Asset: Codable, Sendable
@@ -67,9 +72,9 @@ public struct EarthGLBInfo: Codable, Sendable
     }
 
     private enum CodingKeys: String, CodingKey
-    { case schemaVersion, name, exportedAt, glb, geometry, exportOptions, attributions, thumbnail }
+    { case schemaVersion, name, exportedAt, glb, geometry, exportOptions, attributions, geographicOrigin, captureIdentity, thumbnail }
 
-    init(name: String, fileName: String, byteCount: Int, sha256: String, geometry: Geometry, options: EarthGLBExportOptions, attributions: [String], thumbnail: Thumbnail?)
+    init(name: String, fileName: String, byteCount: Int, sha256: String, geometry: Geometry, options: EarthGLBExportOptions, attributions: [String], geographicOrigin: EarthGeographicOrigin, captureIdentity: EarthCaptureIdentity?, thumbnail: Thumbnail?)
     {
         schemaVersion = 1
         self.name = name
@@ -78,6 +83,8 @@ public struct EarthGLBInfo: Codable, Sendable
         self.geometry = geometry
         exportOptions = options
         self.attributions = attributions
+        self.geographicOrigin = geographicOrigin
+        self.captureIdentity = captureIdentity
         self.thumbnail = thumbnail
     }
 
@@ -91,6 +98,8 @@ public struct EarthGLBInfo: Codable, Sendable
         geometry = try values.decode(Geometry.self, forKey: .geometry)
         exportOptions = try values.decode(EarthGLBExportOptions.self, forKey: .exportOptions)
         attributions = try values.decode([String].self, forKey: .attributions)
+        geographicOrigin = try values.decodeIfPresent(EarthGeographicOrigin.self, forKey: .geographicOrigin)
+        captureIdentity = try values.decodeIfPresent(EarthCaptureIdentity.self, forKey: .captureIdentity)
         thumbnail = try values.decode(Thumbnail?.self, forKey: .thumbnail)
         try validate()
     }
@@ -106,6 +115,8 @@ public struct EarthGLBInfo: Codable, Sendable
         try values.encode(geometry, forKey: .geometry)
         try values.encode(exportOptions, forKey: .exportOptions)
         try values.encode(attributions, forKey: .attributions)
+        try values.encode(geographicOrigin, forKey: .geographicOrigin)
+        try values.encode(captureIdentity, forKey: .captureIdentity)
         try values.encode(thumbnail, forKey: .thumbnail)
     }
 
@@ -141,6 +152,11 @@ public struct EarthGLBInfo: Codable, Sendable
               zip(geometry.minimum, geometry.maximum).allSatisfy({ pair in pair.0.isFinite && pair.1.isFinite && pair.0 <= pair.1 })
         else { throw EarthGLBInfoError.invalidInfo }
         try exportOptions.validate()
+        if let captureIdentity
+        {
+            try captureIdentity.validate()
+            guard captureIdentity.request.center == geographicOrigin else { throw EarthGLBInfoError.invalidInfo }
+        }
         try thumbnail?.validate()
     }
 }

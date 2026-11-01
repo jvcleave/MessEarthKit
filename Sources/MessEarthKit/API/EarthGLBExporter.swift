@@ -332,6 +332,8 @@ public actor EarthGLBExporter
                     geometry: try plan.informationGeometry(),
                     options: plan.options,
                     attributions: attributions,
+                    geographicOrigin: plan.collection.geographicOrigin,
+                    captureIdentity: try EarthCaptureIdentity.readMetadata(json: document),
                     thumbnail: thumbnail
                 )
                 let infoURL = EarthGLBInfo.companionURL(fileURL)

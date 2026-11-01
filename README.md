@@ -142,8 +142,9 @@ You can edit the suggestion before choosing **Rename**. The optional information
 companion moves with the GLB; its contents and captured identity stay unchanged.
 
 New app exports also include an optional `.glb.info.json` companion with model
-statistics, attribution and a small PNG thumbnail. Keep it beside the GLB for
-consumers that support it. The GLB works independently. See the
+statistics, saved location name, full-precision latitude/longitude and ellipsoid
+height, capture dimensions/detail, attribution and a small PNG thumbnail. Keep it
+beside the GLB for consumers that support it. The GLB works independently. See the
 [companion format](docs/GLB_INFO.md) for SDK export and reader details.
 
 Export choices leave downloaded and prepared sources intact. Omitting images

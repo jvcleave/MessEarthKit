@@ -351,8 +351,10 @@ exceeds the consumer's limits.
 ### Destination safety and retention
 
 The example app also writes an optional `.glb.info.json` containing a model
-summary matched by GLB size/SHA-256 and an embedded PNG. SDK callers opt in with
-`EarthGLBExporter.exportWithInfo`; the existing `export` method remains GLB-only.
+summary matched by GLB size/SHA-256, geographic origin, saved capture identity
+(name, full-precision centre, dimensions and detail) and an embedded PNG. SDK
+callers opt in with `EarthGLBExporter.exportWithInfo`; the existing `export`
+method remains GLB-only.
 See [the companion contract](GLB_INFO.md) for fields, resource limits and consumer
 behavior. Companion failures retain the published GLB and report a warning.
 
