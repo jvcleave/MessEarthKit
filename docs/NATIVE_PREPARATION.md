@@ -60,6 +60,14 @@ context. Pixel layouts requiring lossy alpha unpremultiplication fail. Lossless
 PNG output preserves decoded straight-alpha/base-color samples without resizing.
 These figures are source working-set limits, not total process-memory guarantees.
 
+The public `EarthTexture.decodedRGBA8(maximumDecodedBytes:)` method shares this
+sample reader for host texture uploads. It returns tightly packed, top-left,
+straight-alpha RGBA8, preserving RGB even when alpha is zero. The caller selects
+a positive decoded-output budget (256 MiB by default); the 16,384-pixel edge and
+supported sample-layout checks remain. It performs synchronous pixel work and
+belongs on a host worker. Its budget covers returned RGBA bytes, not all native
+decoder transients. Offline subdivision retains the source limits above.
+
 [`EarthTextureSubdivision`](../Sources/MessEarthKit/Tiles/EarthTextureSubdivision.swift)
 clips triangles in baked UV space using barycentric coordinates. Repeat, mirror
 and clamp intervals are affine independently on each axis. Nearest sampling needs

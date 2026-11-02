@@ -25,14 +25,15 @@ private enum TextureSamplingCase: CaseIterable, Sendable
 
 /// Independently specified source pixels: x controls red, y controls green,
 /// checker parity controls blue, and alpha varies without premultiplication.
-private func textureFixtureImage(sixteenBits: Bool = false) throws -> Data
+private func textureFixtureImage(sixteenBits: Bool = false, zeroAlphaPixel: Bool = false) throws -> Data
 {
     var pixels = Data()
     for y in 0 ..< 4
     {
         for x in 0 ..< 6
         {
-            let values = [UInt8(20 + 35 * x), UInt8(30 + 55 * y), UInt8((x + y) % 2 == 0 ? 40 : 220), UInt8(120 + 20 * (x % 3))]
+            let alpha: UInt8 = zeroAlphaPixel && x == 0 && y == 0 ? 0 : UInt8(120 + 20 * (x % 3))
+            let values = [UInt8(20 + 35 * x), UInt8(30 + 55 * y), UInt8((x + y) % 2 == 0 ? 40 : 220), alpha]
             for value in values
             {
                 pixels.append(value)
@@ -54,9 +55,19 @@ private func textureFixtureImage(sixteenBits: Bool = false) throws -> Data
     return data as Data
 }
 
-private func textureFixture(sampling: TextureSamplingCase = .nearestClamp, mipmap: EarthMipmapFilter = .none, sixteenBits: Bool = false) throws -> (EarthMesh, EarthMaterial)
+private func textureFixture(sampling: TextureSamplingCase = .nearestClamp, mipmap: EarthMipmapFilter = .none, sixteenBits: Bool = false, zeroAlphaPixel: Bool = false) throws -> (EarthMesh, EarthMaterial)
 {
-    let texture = EarthTexture(encodedImage: try textureFixtureImage(sixteenBits: sixteenBits), mimeType: "image/png", width: 6, height: 4, wrapS: sampling.wrapS, wrapT: sampling.wrapT, usesNearestMagnification: !sampling.linear, usesNearestMinification: !sampling.linear, mipmapFilter: mipmap)
+    let texture = EarthTexture(
+        encodedImage: try textureFixtureImage(sixteenBits: sixteenBits, zeroAlphaPixel: zeroAlphaPixel),
+        mimeType: "image/png",
+        width: 6,
+        height: 4,
+        wrapS: sampling.wrapS,
+        wrapT: sampling.wrapT,
+        usesNearestMagnification: !sampling.linear,
+        usesNearestMinification: !sampling.linear,
+        mipmapFilter: mipmap
+    )
     let points: [SIMD2<Float>] = [SIMD2(0, 0), SIMD2(1, 0), SIMD2(1, 1), SIMD2(0, 1)]
     let vertices = points.map
     { point in
@@ -73,6 +84,18 @@ private func decodedTexturePixels(_ texture: EarthTexture) throws -> (Data, Int)
     let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
     #expect(image.bitsPerPixel == 32 && image.bitsPerComponent == 8 && image.alphaInfo == .last)
     return (try #require(image.dataProvider?.data) as Data, image.bytesPerRow)
+}
+
+@Test func textureDecodingPreservesStraightAlphaAndBudget() throws
+{
+    let (_, material) = try textureFixture(zeroAlphaPixel: true)
+    let texture = try #require(material.baseColorTexture)
+    let pixels = try texture.decodedRGBA8(maximumDecodedBytes: 96)
+    #expect(pixels.count == 96)
+    #expect(Array(pixels[0 ..< 8]) == [20, 30, 40, 0, 55, 30, 220, 140])
+    #expect(Array(pixels[92 ..< 96]) == [195, 195, 40, 160])
+    #expect(throws: EarthImportError.self)
+    { _ = try texture.decodedRGBA8(maximumDecodedBytes: 95) }
 }
 
 /// Independent reference sampler: integer pixel wrapping plus nearest/bilinear

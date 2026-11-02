@@ -394,6 +394,16 @@ footprint and descends until the geometric-error target is met; unavailable
 detail fails explicitly. The example preview honors unlit color; lit materials
 use simple directional lighting rather than a full PBR environment.
 
+Hosts can decode an `EarthTexture` with
+`decodedRGBA8(maximumDecodedBytes:)` on their worker. It returns top-left,
+straight-alpha RGBA8 samples without color conversion or premultiplication,
+including RGB stored in zero-alpha pixels. The default output-byte budget is
+256 MiB; callers can select another positive budget. The 16,384-pixel edge limit
+still applies. Unsupported pixel layouts throw `EarthImportError.unsupportedContent`;
+dimensions or output bytes exceeding admission throw `EarthImportError.limitExceeded`.
+This output budget does not bound ImageIO's transient allocations. See the
+[native preparation reference](NATIVE_PREPARATION.md#base-level-texture-subdivision).
+
 Unsupported content includes Meshopt, other unverified extensions, sparse
 accessors, animation/skinning, GPU instancing, extra material maps, implicit
 tiling, legacy tile containers and external GLB resource URLs. The importer

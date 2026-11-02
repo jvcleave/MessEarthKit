@@ -40,6 +40,18 @@ public struct EarthTexture: Sendable
     public let usesNearestMagnification: Bool
     public let usesNearestMinification: Bool
     public let mipmapFilter: EarthMipmapFilter
+
+    /// Decodes top-left, straight-alpha RGBA8 samples without color conversion,
+    /// resizing or alpha premultiplication. Call on a worker; unsupported pixel
+    /// layouts fail explicitly. The byte budget covers the returned pixels.
+    public func decodedRGBA8(maximumDecodedBytes: Int = 256 * 1024 * 1024) throws -> Data
+    {
+        do { return try EarthTextureRaster(texture: self, maximumBytes: maximumDecodedBytes).rgba8Data }
+        catch EarthPreparationError.textureSubdivisionWorkingSet
+        { throw EarthImportError.limitExceeded("Decoded texture bytes or dimensions.") }
+        catch EarthPreparationError.texturePixelFormatUnsupported
+        { throw EarthImportError.unsupportedContent("Texture pixels cannot be represented as unchanged straight-alpha RGBA8.") }
+    }
 }
 
 public enum EarthAlphaMode: Sendable

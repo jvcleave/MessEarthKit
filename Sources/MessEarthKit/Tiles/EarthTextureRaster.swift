@@ -12,13 +12,13 @@ struct EarthTextureRaster
     static let maximumDimension = 16384
     let width: Int
     let height: Int
-    private let rgba: Data
+    let rgba8Data: Data
 
-    init(texture: EarthTexture) throws
+    init(texture: EarthTexture, maximumBytes: Int = Self.maximumBytes) throws
     {
         guard texture.width > 0, texture.height > 0,
               texture.width <= Self.maximumDimension, texture.height <= Self.maximumDimension,
-              texture.width <= Self.maximumBytes / 4 / texture.height
+              maximumBytes > 0, texture.width <= maximumBytes / 4 / texture.height
         else { throw EarthPreparationError.textureSubdivisionWorkingSet }
         guard let source = CGImageSourceCreateWithData(texture.encodedImage as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
@@ -83,7 +83,7 @@ struct EarthTextureRaster
         }
         width = image.width
         height = image.height
-        rgba = result
+        rgba8Data = result
     }
 
     func crop(x: Int, y: Int, width: Int, height: Int, gutter: Int, source: EarthTexture) throws -> EarthTexture
@@ -105,7 +105,7 @@ struct EarthTextureRaster
         }
         try pixels.withUnsafeMutableBytes
         { output in
-            try rgba.withUnsafeBytes
+            try rgba8Data.withUnsafeBytes
             { input in
                 let src = input.bindMemory(to: UInt8.self)
                 let dst = output.bindMemory(to: UInt8.self)
