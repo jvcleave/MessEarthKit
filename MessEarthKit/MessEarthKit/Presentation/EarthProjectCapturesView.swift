@@ -13,6 +13,10 @@ struct EarthProjectCapturesView: View
         { location in
             EarthProjectLocationView(location: location, project: project, library: library)
         }
+        if !library.exportQueue.entries.isEmpty
+        {
+            Button(library.exportQueue.buttonTitle, action: library.showExportQueue)
+        }
     }
 }
 
@@ -73,7 +77,10 @@ struct EarthProjectCaptureCard: View
                     variantID: variant.id,
                     isDownloaded: true,
                     canStartWork: library.canStartWork && !project.isBusy && project.downloadJob(variant.id)?.phase.isActive != true,
-                    startExport: { project.exportVariant(variant.id) }
+                    startExport: { project.exportVariant(variant.id) },
+                    canQueue: library.exportQueue.canEdit,
+                    isQueued: library.isExportQueued(project.id, variantID: variant.id),
+                    addToQueue: { library.addExportToQueue(project.id, variantID: variant.id) }
                 )
             }
         }

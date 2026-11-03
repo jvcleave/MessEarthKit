@@ -34,6 +34,7 @@ managed layout to a user-selected root:
 
 ```text
 appSettings.json
+exportQueue.json
 stats/
   RequestUsage.sqlite
 projects/
@@ -45,8 +46,9 @@ projects/
     output/<export UUID>/
 ```
 
-Settings use schema 1, projects schema 5 and export history schema 1. The
-`exports.json` file is first created with a tracked export. Relative references
+Settings use schema 1, projects schema 5, export history schema 1 and the global
+export queue schema 1. `exportQueue.json` is first written when the queue changes.
+The `exports.json` file is first created with a tracked export. Relative references
 and validated UUIDs identify artifacts; display names and addresses are metadata.
 SDK artifact names/layouts stay with the SDK. Export naming is documented in the
 [technical reference](TECHNICAL_REFERENCE.md#export-filenames-and-history).
@@ -78,9 +80,10 @@ The app blocks new actions, stops request-history refreshes and closes its SQLit
 connection before file copying. All filesystem work remains with `EarthAppFiles`;
 the UI consumes progress and sends move/cancel actions.
 
-The file owner copies `projects`, `stats` and any `appSettings.json` to a private
-staging folder in the destination, rejects links and unsupported file types, and
-compares source/copy hashes with bounded buffers. It checks the source inventory
+The file owner copies `projects`, `stats`, any `appSettings.json` and any
+`exportQueue.json` to a private staging folder in the destination, rejects links
+and unsupported file types, and compares source/copy hashes with bounded buffers.
+It checks the source inventory
 again before publication. Project/source/preparation/export identities and file
 bytes are retained. Other files at the previous root are left in place.
 
@@ -115,10 +118,10 @@ profile/source; navigation never starts transport or selects a newest archive.
 Location/variant mutation and area-freeze rules are described in the
 [project metadata contract](TECHNICAL_REFERENCE.md#project-metadata).
 
-The app queue admits two independent source acquisitions and serializes native
+The download queue admits two independent source acquisitions and serializes native
 model preparation, including preview/export preparation. Jobs retain explicit
 project/variant/source identity and survive navigation; they never use a later
-selection as their write target. Queue entries are session-only, while SDK
+selection as their write target. Download queue entries are session-only, while SDK
 journals retain completed source files and interruption checkpoints on disk.
 Pause waits for the worker to stop before releasing its slot. Active variants,
 their containing locations and projects cannot be deleted, and their source
@@ -157,6 +160,57 @@ channel/optimization/identity metadata inside its root layer; listing reads only
 that bounded marker. Format and optimization settings are snapshotted with the
 variant request. Each regular/optimized export gets a fresh UUID output folder.
 There is no scan, history reassignment or rewrite of older files.
+
+## Global export queue and collection
+
+One library-retained `EarthExportQueue` owns the global export queue. Its
+schema-1 `exportQueue.json` contains explicit project/location/variant/source
+identities, captured display/export names, preparation profile, format, channel
+options, optimization settings, selection, phase and completed export references.
+It contains no security-scoped destination bookmarks, API keys or source URLs.
+Only a missing file initializes an empty queue; malformed or unsupported metadata
+blocks queue changes until it can be read. Queue writes are serialized atomic
+snapshots through `EarthAppFiles`, within the normal small-metadata limit.
+
+START snapshots checked pending entry IDs and processes them sequentially.
+Before each worker starts, its new export UUID and running phase are saved. The
+existing export service revalidates the pinned source and preparation profile;
+later selection, location names and export-control changes do not replace the
+request. A worker waits for any active export-history read before starting.
+Project refresh after successful export uses the worker's awaited history result
+without starting a second background read. Native preparation uses the shared
+preparation gate. Individual export failures stay on their entries and processing
+continues. Pending entries can be
+unchecked or removed during a run; the active entry stays locked until settled.
+Removing an entry never deletes an output or changes export history.
+
+Cancellation waits for the active worker and its project refresh. Publication
+that wins cancellation remains complete and collectible. Other pending entries
+are retained; cancelled/failed entries require Retry. Relaunch never starts
+exports. Running entries are reconciled against their exact saved export UUID
+in project history: a published tracked result becomes complete, an unpublished
+attempt becomes cancelled, and a history-read failure stays explicit. No output
+folders are scanned or adopted. An interruption before history publication can
+leave an untracked file for review in Finder, following normal export policy.
+
+COLLECT copies checked completed results into a new named batch folder beneath
+the user-selected folder. The file owner resolves the recorded export UUID
+through current history so later renames are respected. It includes each GLB's
+optional `.glb.info.json` companion. Duplicate names receive numeric suffixes,
+including matching companion names; existing destination files are never replaced.
+The source exports and history remain unchanged. A known output whose history
+write failed can be collected from its explicit retained reference.
+
+The file owner retains source/destination access and export read tokens while a
+worker streams copies in bounded buffers, verifies their SHA-256 hashes and
+checks source file identity/size/modification time. It publishes the complete
+batch from private staging only after verification. Failure/cancellation removes
+only that transaction's unpublished copies; incomplete cleanup is an explicit
+error. Managed-library destinations and linked source files are rejected. New
+project work is disabled during queue processing/collection; navigation and
+pending-row selection/removal remain available. Active queue work, collection,
+folder selection and pending queue saves block storage relocation. Moving an
+idle library includes the queue and preserves its relative output references.
 
 ## Confinement and access
 

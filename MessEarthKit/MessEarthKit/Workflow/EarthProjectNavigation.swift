@@ -3,7 +3,7 @@ import Observation
 
 enum EarthAppRoute: Hashable, Sendable
 {
-    case project(UUID), preview(UUID), settings
+    case project(UUID), preview(UUID), settings, exportQueue
 }
 
 struct EarthNavigationTicket: Sendable

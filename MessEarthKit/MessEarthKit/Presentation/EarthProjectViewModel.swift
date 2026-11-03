@@ -738,20 +738,51 @@ final class EarthProjectViewModel: Identifiable
         export.export(variantID: variantID, saveEdits: { [weak self] in
             guard let self else { throw CancellationError() }
             try await flushEdits()
-        }, onFinished: { [weak self, store, id] in
-            // Offline preparation may have committed even if export was cancelled.
-            // Reload independently of the cancelled worker before enabling actions.
-            let reload = Task { try await store.open(id: id) }
-            do
-            {
-                let opened = try await reload.value
-                guard let self else { return }
-                apply(opened: opened, restoresEditor: !hasPendingEdits && persistenceError == nil)
-                if opened.record.captures.first(where: { $0.id == variantID })?.preparation != nil
-                { downloadQueue.forgetFinishedJob(.init(projectID: id, variantID: variantID)) }
-            }
-            catch { self?.persistenceError = error.localizedDescription }
-        })
+        }, onFinished: { [weak self] in await self?.refreshAfterExport(variantID) })
+    }
+
+    func addExportToQueue(_ variantID: UUID, queue: EarthExportQueue)
+    {
+        guard !isBusy, downloadJob(variantID)?.phase.isActive != true,
+              captureStatuses[variantID]?.archive?.state == .downloaded else { return }
+        export.addToQueue(variantID: variantID, queue: queue)
+        { [weak self] in
+            guard let self else { throw CancellationError() }
+            try await flushEdits()
+        }
+    }
+
+    func exportQueued(_ entry: EarthExportQueueEntry, cancel: @escaping @MainActor () -> Void, progress: @escaping @Sendable (EarthProjectExportProgress) -> Void) async throws -> EarthProjectExportResult
+    {
+        let variantID = entry.request.variantID
+        guard !isBusy, downloadJob(variantID)?.phase.isActive != true else { throw EarthProjectCaptureError.workInProgress }
+        try await flushEdits()
+        do
+        {
+            let result = try await export.exportQueued(entry, cancel: cancel, progress: progress)
+            await refreshAfterExport(variantID)
+            return result
+        }
+        catch
+        {
+            await refreshAfterExport(variantID)
+            throw error
+        }
+    }
+
+    private func refreshAfterExport(_ variantID: UUID) async
+    {
+        // Offline preparation may have committed even if export was cancelled.
+        // Refresh independently of the cancelled worker before enabling actions.
+        let reload = Task { [store, id] in try await store.open(id: id) }
+        do
+        {
+            let opened = try await reload.value
+            apply(opened: opened, restoresEditor: !hasPendingEdits && persistenceError == nil, refreshesExportHistory: false)
+            if opened.record.captures.first(where: { $0.id == variantID })?.preparation != nil
+            { downloadQueue.forgetFinishedJob(.init(projectID: id, variantID: variantID)) }
+        }
+        catch { persistenceError = error.localizedDescription }
     }
 
     func preparePreview(onPrepared: @escaping @MainActor () -> Void)
@@ -836,7 +867,7 @@ final class EarthProjectViewModel: Identifiable
         updateCaptureStatus()
     }
 
-    private func apply(opened: EarthOpenedProject, restoresEditor: Bool)
+    private func apply(opened: EarthOpenedProject, restoresEditor: Bool, refreshesExportHistory: Bool = true)
     {
         adoptLocations(opened.record.locations)
         selectedCaptureID = opened.record.selectedCaptureID
@@ -844,7 +875,7 @@ final class EarthProjectViewModel: Identifiable
         prepared = opened.prepared
         savedStatus = opened.status
         updateCaptureStatus()
-        export.reloadHistory()
+        if refreshesExportHistory { export.reloadHistory() }
         if restoresEditor { adoptEditor(opened.record) }
     }
 

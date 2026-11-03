@@ -2,7 +2,7 @@ import Foundation
 import MessEarthKit
 
 /// Delivery choices share channel settings and keep optimization explicit.
-enum EarthExportFormat: String, CaseIterable, Identifiable, Sendable
+enum EarthExportFormat: String, Codable, CaseIterable, Identifiable, Sendable
 {
     case glb = "GLB"
     case optimizedGLB = "Optimized GLB"
@@ -15,7 +15,7 @@ enum EarthExportFormat: String, CaseIterable, Identifiable, Sendable
     var fileExtension: String { isGLB ? "glb" : "usdz" }
 }
 
-struct EarthExportOptimizationSettings: Equatable, Sendable
+struct EarthExportOptimizationSettings: Codable, Equatable, Sendable
 {
     var triangleFraction = 0.5
     var maximumErrorMeters = 0.1

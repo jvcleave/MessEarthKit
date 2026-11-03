@@ -609,7 +609,10 @@ Hosts can decode an `EarthTexture` with
 straight-alpha RGBA8 samples without color conversion or premultiplication,
 including RGB stored in zero-alpha pixels. The default output-byte budget is
 256 MiB; callers can select another positive budget. The 16,384-pixel edge limit
-still applies. Unsupported pixel layouts throw `EarthImportError.unsupportedContent`;
+still applies. Common RGB/RGBA layouts use Accelerate byte conversion or reuse
+already packed immutable RGBA storage. Nonopaque premultiplied samples remain
+unsupported because unpremultiplication would alter quantized RGB values.
+Unsupported pixel layouts throw `EarthImportError.unsupportedContent`;
 dimensions or output bytes exceeding admission throw `EarthImportError.limitExceeded`.
 This output budget does not bound ImageIO's transient allocations. See the
 [native preparation reference](NATIVE_PREPARATION.md#base-level-texture-subdivision).
@@ -689,6 +692,7 @@ admission, verification, cancellation and retained-copy handling.
 | Raw source archive | `projects/<project UUID>/sources/<capture UUID>/` |
 | Prepared job | `projects/<project UUID>/prepared/<preparation UUID>/` |
 | GLB/USDZ export | `projects/<project UUID>/output/<export UUID>/` |
+| Global export queue | `exportQueue.json` |
 | Local request history | `stats/RequestUsage.sqlite` |
 
 **Show Source Files** reveals a recorded archive. The user controls retention.
@@ -813,6 +817,44 @@ metadata through `EarthUSDZExporter.metadata(fileURL:)` and reports source/outpu
 triangle counts, achieved meter error and whether optimization was selected. Missing files or absent choices
 display unavailable contents; malformed output metadata reports a per-file error without
 discarding history. The optional information companion is not required.
+
+### Global variant export queue
+
+Each downloaded variant offers **ADD TO QUEUE** beside its immediate export
+button. Adding captures the current format, included channels, optimization,
+source identity, preparation profile and names. The same variant can be queued
+with different delivery choices; an identical pending/running request displays
+**Already queued**. Subsequent control edits or renames do not modify that entry.
+
+**QUEUE MANAGER** on the project home screen and beneath a project's locations
+opens the same app-wide queue. Rows identify project, location, variant, format,
+settings and status. Checkboxes select entries for **START** or **COLLECT…**:
+START processes checked pending entries; COLLECT copies checked complete entries.
+Select All/Deselect All and Remove Checked are available. Removing an entry
+leaves exported files and project history intact. Up/down controls reorder the
+stopped queue. Failed/cancelled rows offer Retry with their original request.
+
+Exports run one at a time and continue across navigation. An individual error
+does not discard other results. **CANCEL** waits for the worker to stop and keeps
+completed files; other entries remain pending. Pending rows can be unchecked or
+removed before their turn, and the active row stays locked. Newly added or
+retried entries wait for a later START. New project work waits until the batch
+stops; the existing shared gate still serializes native preparation.
+
+The versioned queue is saved across launches and reopens stopped. An interrupted
+running attempt checks only its exact saved export UUID in project history, so
+a committed tracked output remains complete. No capture transport or export is
+started on launch, and no output directory scan adopts untracked files. Pending
+queue saves and active work block storage relocation.
+
+COLLECT selects a destination folder and copies completed output files plus
+optional GLB companions into a new batch folder. Repeated filenames gain numeric
+suffixes, applied to companions as well. Collection follows later history
+renames by export identity, verifies copied bytes and leaves originals in place.
+It never overwrites existing destination files. Missing/deleted results fail
+explicitly. Cancelling a copy removes its unpublished batch; cancelling after
+batch publication retains the completed copy. See the
+[storage and collection contract](APP_STORAGE.md#global-export-queue-and-collection).
 
 ### Exported model viewer
 

@@ -28,7 +28,7 @@ enum EarthProjectCaptureError: Error, LocalizedError, Sendable
         {
             case .invalidInput: "Enter positive finite Width and Height values for this location."
             case .changedSelection: "The project selection changed. Review its map again before downloading."
-            case .workInProgress: "Wait for the current operation to finish before deleting."
+            case .workInProgress: "Wait for the current operation to finish."
         }
     }
 }

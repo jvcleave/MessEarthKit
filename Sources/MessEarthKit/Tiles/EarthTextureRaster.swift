@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -20,69 +21,133 @@ struct EarthTextureRaster
               texture.width <= Self.maximumDimension, texture.height <= Self.maximumDimension,
               maximumBytes > 0, texture.width <= maximumBytes / 4 / texture.height
         else { throw EarthPreparationError.textureSubdivisionWorkingSet }
+        try Task.checkCancellation()
         guard let source = CGImageSourceCreateWithData(texture.encodedImage as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
               let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCache: false] as CFDictionary),
-              image.width == texture.width, image.height == texture.height,
-              image.bitsPerComponent == 8, let provider = image.dataProvider?.data
+              image.width == texture.width, image.height == texture.height
         else { throw EarthPreparationError.texturePixelFormatUnsupported }
+        try self.init(image: image, maximumBytes: maximumBytes)
+    }
+
+    init(image: CGImage, maximumBytes: Int = Self.maximumBytes) throws
+    {
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0,
+              width <= Self.maximumDimension, height <= Self.maximumDimension,
+              maximumBytes > 0, width <= maximumBytes / 4 / height
+        else { throw EarthPreparationError.textureSubdivisionWorkingSet }
         let gray = image.colorSpace?.model == .monochrome
-        guard gray || image.colorSpace?.model == .rgb,
+        guard image.bitsPerComponent == 8,
+              gray || image.colorSpace?.model == .rgb,
               [8, 16, 24, 32].contains(image.bitsPerPixel),
-              image.bitsPerPixel.isMultiple(of: 8)
+              let provider = image.dataProvider?.data
         else { throw EarthPreparationError.texturePixelFormatUnsupported }
         let bytes = provider as Data
-        guard image.bytesPerRow <= Int.max / image.height,
-              bytes.count >= image.bytesPerRow * image.height
-        else { throw EarthPreparationError.texturePixelFormatUnsupported }
         let components = image.bitsPerPixel / 8
         let byteOrder = image.bitmapInfo.intersection(.byteOrderMask)
         let little = byteOrder == .byteOrder32Little
-        guard !gray || (byteOrder != .byteOrder16Little && !little),
+        guard image.bytesPerRow >= width * components,
+              image.bytesPerRow <= Int.max / height,
+              bytes.count >= image.bytesPerRow * height,
+              !gray || (byteOrder != .byteOrder16Little && !little),
               gray ? (components == 1 || components == 2) : (components == 3 || components == 4)
         else { throw EarthPreparationError.texturePixelFormatUnsupported }
-        var result = Data(count: texture.width * texture.height * 4)
-        try result.withUnsafeMutableBytes
-        { destination in
+
+        let color: Int
+        let hasAlpha: Bool
+        let alpha: Int
+        switch image.alphaInfo
+        {
+            case .none, .noneSkipLast: color = 0; hasAlpha = false; alpha = components - 1
+            case .noneSkipFirst: color = 1; hasAlpha = false; alpha = 0
+            case .last, .premultipliedLast: color = 0; hasAlpha = true; alpha = components - 1
+            case .first, .premultipliedFirst: color = 1; hasAlpha = true; alpha = 0
+            default: throw EarthPreparationError.texturePixelFormatUnsupported
+        }
+        let colors = gray ? [color, color, color] : [color, color + 1, color + 2]
+        guard colors.allSatisfy({ $0 < components }) else { throw EarthPreparationError.texturePixelFormatUnsupported }
+        let offsets = (colors + [alpha]).map { little ? components - 1 - $0 : $0 }
+        let red = offsets[0], green = offsets[1], blue = offsets[2], opacity = offsets[3]
+
+        try Task.checkCancellation()
+        if image.alphaInfo == .premultipliedFirst || image.alphaInfo == .premultipliedLast
+        {
+            // Unpremultiplying quantized pixels would change their authored RGB.
+            // Only fully opaque premultiplied input is representable unchanged.
             try bytes.withUnsafeBytes
-            { input in
+            { (input: UnsafeRawBufferPointer) in
                 let src = input.bindMemory(to: UInt8.self)
-                let dst = destination.bindMemory(to: UInt8.self)
-                for y in 0 ..< image.height
+                for row in 0 ..< height
                 {
                     try Task.checkCancellation()
-                    for x in 0 ..< image.width
+                    for column in 0 ..< width
                     {
-                        let offset = y * image.bytesPerRow + x * components
-                        func sample(_ index: Int) throws -> UInt8
-                        {
-                            guard index < components else { throw EarthPreparationError.texturePixelFormatUnsupported }
-                            return src[offset + (little ? components - 1 - index : index)]
-                        }
-                        let color: Int
-                        let alpha: UInt8
-                        switch image.alphaInfo
-                        {
-                            case .none, .noneSkipLast: color = 0; alpha = 255
-                            case .noneSkipFirst: color = 1; alpha = 255
-                            case .last, .premultipliedLast: color = 0; alpha = try sample(components - 1)
-                            case .first, .premultipliedFirst: color = 1; alpha = try sample(0)
-                            default: throw EarthPreparationError.texturePixelFormatUnsupported
-                        }
-                        // Unpremultiplying quantized pixels would change their
-                        // authored RGB values. Refuse that representation explicitly.
-                        if image.alphaInfo == .premultipliedFirst || image.alphaInfo == .premultipliedLast
-                        { guard alpha == 255 else { throw EarthPreparationError.texturePixelFormatUnsupported } }
-                        let target = (y * image.width + x) * 4
-                        dst[target] = try sample(color)
-                        dst[target + 1] = try sample(gray ? color : color + 1)
-                        dst[target + 2] = try sample(gray ? color : color + 2)
-                        dst[target + 3] = alpha
+                        guard src[row * image.bytesPerRow + column * components + opacity] == 255
+                        else { throw EarthPreparationError.texturePixelFormatUnsupported }
                     }
                 }
             }
         }
-        width = image.width
-        height = image.height
+
+        let outputRowBytes = width * 4
+        if !gray, components == 4, hasAlpha, offsets == [0, 1, 2, 3],
+           image.bytesPerRow == outputRowBytes, bytes.count == outputRowBytes * height
+        {
+            try Task.checkCancellation()
+            self.width = width
+            self.height = height
+            rgba8Data = bytes
+            return
+        }
+
+        let rgb24 = !gray && components == 3 && !hasAlpha && offsets[0 ..< 3] == [0, 1, 2]
+        let rgb32 = !gray && components == 4
+        var result = Data(count: outputRowBytes * height)
+        try result.withUnsafeMutableBytes
+        { destination in
+            try bytes.withUnsafeBytes
+            { (input: UnsafeRawBufferPointer) in
+                if rgb24 || rgb32
+                {
+                    let channels = offsets.map { UInt8($0) }
+                    let background: [UInt8] = [0, 0, 0, 255]
+                    // Small row batches keep cancellation bounded while vImage
+                    // expands/reorders bytes without color or alpha conversion.
+                    for row in stride(from: 0, to: height, by: 64)
+                    {
+                        try Task.checkCancellation()
+                        let rows = vImagePixelCount(min(64, height - row))
+                        var source = vImage_Buffer(data: UnsafeMutableRawPointer(mutating: input.baseAddress!.advanced(by: row * image.bytesPerRow)), height: rows, width: vImagePixelCount(width), rowBytes: image.bytesPerRow)
+                        var output = vImage_Buffer(data: destination.baseAddress!.advanced(by: row * outputRowBytes), height: rows, width: vImagePixelCount(width), rowBytes: outputRowBytes)
+                        let status = rgb24
+                            ? vImageConvert_RGB888toRGBA8888(&source, nil, 255, &output, false, vImage_Flags(kvImageNoFlags))
+                            : vImagePermuteChannelsWithMaskedInsert_ARGB8888(&source, &output, channels, hasAlpha ? 0 : 1, background, vImage_Flags(kvImageNoFlags))
+                        guard status == kvImageNoError else { throw EarthPreparationError.texturePixelFormatUnsupported }
+                    }
+                    return
+                }
+
+                let src = input.bindMemory(to: UInt8.self)
+                let dst = destination.bindMemory(to: UInt8.self)
+                for y in 0 ..< height
+                {
+                    try Task.checkCancellation()
+                    for x in 0 ..< width
+                    {
+                        let offset = y * image.bytesPerRow + x * components
+                        let target = y * outputRowBytes + x * 4
+                        dst[target] = src[offset + red]
+                        dst[target + 1] = src[offset + green]
+                        dst[target + 2] = src[offset + blue]
+                        dst[target + 3] = hasAlpha ? src[offset + opacity] : 255
+                    }
+                }
+            }
+        }
+        try Task.checkCancellation()
+        self.width = width
+        self.height = height
         rgba8Data = result
     }
 

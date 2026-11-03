@@ -42,7 +42,7 @@ final class EarthStorageRelocation
         let permissions: NSNumber?
     }
 
-    private static let names = ["projects", "stats", "appSettings.json"]
+    private static let names = ["projects", "stats", "appSettings.json", "exportQueue.json"]
     private let source: URL
     private let destination: URL
     private let staging: URL

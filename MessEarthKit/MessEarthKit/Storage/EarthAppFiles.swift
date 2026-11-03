@@ -36,6 +36,7 @@ enum EarthAppFilesError: Error, Equatable, LocalizedError, Sendable
 enum EarthAppMetadata: Sendable
 {
     case settings
+    case exportQueue
     case project(UUID)
     case exports(UUID)
 }
@@ -352,10 +353,14 @@ actor EarthAppFiles
         try newExportDestination(projectID: projectID, name: name, detail: detail, options: options, format: .glb)
     }
 
-    func newExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, options: EarthExportOptions, format: EarthExportFormat) throws -> EarthProjectExportDestination
+    func newExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, options: EarthExportOptions, format: EarthExportFormat, exportID: UUID = UUID()) throws -> EarthProjectExportDestination
     {
         let fileName = try exportFileName(name: name, detail: detail, options: options, format: format)
-        let directory = try newArtifactDirectory(projectID: projectID, kind: .output)
+        let parent = try artifactParent(projectID: projectID, kind: .output)
+        try ensureManagedDirectory(parent)
+        let directory = parent.appendingPathComponent(exportID.uuidString, isDirectory: true)
+        _ = try checkedManagedURL(directory)
+        guard try attributes(directory) == nil else { throw EarthAppFilesError.invalidLocation }
         try ensureManagedDirectory(directory)
         guard let id = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
         return .init(id: id, fileURL: directory.appendingPathComponent(fileName))
@@ -431,6 +436,85 @@ actor EarthAppFiles
         guard values[.type] as? FileAttributeType == .typeRegular, let size = values[.size] as? NSNumber
         else { throw EarthAppFilesError.invalidLocation }
         return size.intValue > 0 ? size.intValue : nil
+    }
+
+    /// Resolve exact saved identities, including a later history rename. Read
+    /// tokens prevent project/output mutation until the copy worker settles.
+    func collectExports(_ entries: [EarthExportQueueEntry], to parent: URL, progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL
+    {
+        guard !entries.isEmpty, !isMovingStorage, !storageWasMoved,
+              parent.isFileURL, !parent.pathComponents.contains("..")
+        else { throw EarthAppFilesError.invalidLocation }
+        let access = EarthFileAccess(url: parent, isDirectory: true, scopedURL: parent)
+        let resolved = parent.resolvingSymlinksInPath()
+        guard try attributes(parent)?[.type] as? FileAttributeType == .typeDirectory,
+              !resolved.pathComponents.map({ $0.lowercased() }).starts(with: storageRootURL.resolvingSymlinksInPath().pathComponents.map { $0.lowercased() }),
+              FileManager.default.isWritableFile(atPath: parent.path)
+        else { throw EarthAppFilesError.invalidLocation }
+        var tokens: [UUID] = []
+        defer
+        {
+            for token in tokens { exportReads.removeValue(forKey: token) }
+            withExtendedLifetime(access) {}
+            withExtendedLifetime(rootAccess) {}
+        }
+        var copies: [EarthExportCollectionFile] = []
+        var names: Set<String> = []
+        var histories: [UUID: [EarthProjectExportRecord]] = [:]
+        for entry in entries
+        {
+            try entry.validate()
+            guard entry.phase == .complete, let saved = entry.result else { throw EarthAppFilesError.missingFile }
+            let projectID = entry.request.projectID
+            if histories[projectID] == nil
+            {
+                do { histories[projectID] = try await EarthProjectExportHistoryStore(projectID: projectID, files: self).records() }
+                catch
+                {
+                    // A published result with an explicit failed history write
+                    // retains its own validated reference, even if history is bad.
+                    guard entry.isUnrecorded else { throw error }
+                }
+            }
+            // Reentrancy during history I/O must not admit a storage move.
+            guard !isMovingStorage, !storageWasMoved else { throw EarthStorageMoveError.busy }
+            let record: EarthProjectExportRecord
+            if let current = histories[projectID]?.first(where: { $0.id == saved.id }) { record = current }
+            else if entry.isUnrecorded { record = saved }
+            else { throw EarthAppFilesError.missingFile }
+            let source = try exportFileURL(projectID: projectID, record: record)
+            guard try exportFileByteCount(projectID: projectID, record: record) != nil else { throw EarthAppFilesError.missingFile }
+            let companion = EarthGLBInfo.companionURL(source)
+            let hasCompanion = try record.format.isGLB && attributes(companion) != nil
+            if hasCompanion
+            {
+                _ = try checkedManagedURL(companion)
+                guard try attributes(companion)?[.type] as? FileAttributeType == .typeRegular else { throw EarthAppFilesError.invalidLocation }
+            }
+            let fileExtension = source.pathExtension
+            let originalStem = source.deletingPathExtension().lastPathComponent
+            var name = record.fileName
+            var suffix = 2
+            while names.contains(name.lowercased()) || (hasCompanion && names.contains((name + ".info.json").lowercased()))
+            {
+                let ending = "_\(suffix).\(fileExtension)"
+                var stem = originalStem
+                while (stem + ending).utf8.count > 245 { stem.removeLast() }
+                name = stem + ending
+                suffix += 1
+            }
+            names.insert(name.lowercased())
+            copies.append(.init(source: source, name: name))
+            if hasCompanion
+            {
+                names.insert((name + ".info.json").lowercased())
+                copies.append(.init(source: companion, name: name + ".info.json"))
+            }
+            let token = UUID()
+            exportReads[token] = (projectID, record.id)
+            tokens.append(token)
+        }
+        return try await EarthExportCollection.copy(files: copies, to: resolved, progress: progress)
     }
 
     /// Keep the optional companion with its GLB. All moves and the metadata
@@ -567,7 +651,7 @@ actor EarthAppFiles
         {
             switch location
             {
-                case .settings, .exports: return nil
+                case .settings, .exportQueue, .exports: return nil
                 case .project: throw EarthAppFilesError.missingFile
             }
         }
@@ -654,6 +738,7 @@ actor EarthAppFiles
         switch location
         {
             case .settings: return storageRootURL.appendingPathComponent("appSettings.json")
+            case .exportQueue: return storageRootURL.appendingPathComponent("exportQueue.json")
             case let .project(id): return try projectLocations(id: id).manifestURL
             case let .exports(id):
                 let project = try projectLocations(id: id)

@@ -7,6 +7,9 @@ struct EarthProjectExportControls: View
     let isDownloaded: Bool
     let canStartWork: Bool
     let startExport: () -> Void
+    let canQueue: Bool
+    let isQueued: Bool
+    let addToQueue: () -> Void
     @Environment(EarthExportViewerViewModel.self) private var viewer
     @Environment(\.openWindow) private var openWindow
     @State private var renameDraft: EarthExportRenameViewModel?
@@ -32,6 +35,8 @@ struct EarthProjectExportControls: View
             {
                 Button("Export \(export.format(for: variantID).rawValue)", action: startExport)
                     .disabled(!isDownloaded || !canStartWork || export.isLoadingHistory || export.historyError != nil)
+                Button(isQueued ? "Already queued" : "ADD TO QUEUE", action: addToQueue)
+                    .disabled(!isDownloaded || !canStartWork || !canQueue || isQueued || export.isLoadingHistory || export.historyError != nil)
                 if export.isLoadingHistory || export.isManagingHistory { ProgressView().controlSize(.small) }
             }
             LazyVGrid(columns: [GridItem(.flexible(), alignment: .leading), GridItem(.flexible(), alignment: .leading)], alignment: .leading, spacing: 6)

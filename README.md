@@ -127,6 +127,15 @@ Preview choices do not change downloaded files or export options.
 3. Choose the matching **Export** button. Preparation runs offline first if needed.
 4. Choose **Show in Finder** beside the completed export.
 
+For a batch, choose **ADD TO QUEUE** beside a variant's Export button. Open
+**QUEUE MANAGER** on the home screen or beneath a project's locations to review
+exports from all projects. Check the pending items you want and choose **START**.
+After the queue finishes or stops, **COLLECT…** copies checked completed results
+into a new batch folder inside the folder you select. You can uncheck, reorder,
+remove or retry entries; saved exports stay in project history. The queue is
+saved across launches and always reopens stopped. See the
+[queue contract](docs/TECHNICAL_REFERENCE.md#global-variant-export-queue).
+
 Choose **VIEW** beside a completed export to open it in a separate model viewer.
 Use its **Export** picker to switch among that variant's files, including regular
 and optimized GLB/USDZ. Drag to orbit, Shift-drag or right-drag to pan, scroll to zoom,

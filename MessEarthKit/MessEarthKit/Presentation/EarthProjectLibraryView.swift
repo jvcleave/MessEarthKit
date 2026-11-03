@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import MessEarthKit
 import Observation
@@ -36,6 +37,7 @@ final class EarthProjectLibraryViewModel
 {
     let navigation = EarthProjectNavigation()
     let exportViewer: EarthExportViewerViewModel
+    let exportQueue: EarthExportQueue
     var path: [EarthAppRoute] { get { navigation.path } set { navigation.path = newValue } }
     let settings: EarthSettingsViewModel
     private(set) var projects: [EarthProjectViewModel] = []
@@ -46,6 +48,7 @@ final class EarthProjectLibraryViewModel
     private(set) var deletionTarget: EarthDeletionTarget?
     private(set) var isDeleting = false
     private(set) var isMovingStorage = false
+    private(set) var isChoosingCollectionFolder = false
     private let downloadQueue = EarthDownloadQueue()
     private let preparationGate = EarthPreparationGate()
     @ObservationIgnored private let files: EarthAppFiles
@@ -59,6 +62,7 @@ final class EarthProjectLibraryViewModel
     {
         self.files = files
         exportViewer = EarthExportViewerViewModel(service: EarthExportViewerService(files: files))
+        exportQueue = EarthExportQueue(files: files)
         store = EarthProjectStore(files: files)
         settings = EarthSettingsViewModel(files: files, usageStore: usageStore)
         reload()
@@ -66,11 +70,17 @@ final class EarthProjectLibraryViewModel
 
     func project(id: UUID) -> EarthProjectViewModel? { owners[id] }
 
-    var canStartWork: Bool { !isDeleting && !isMovingStorage }
+    var canStartWork: Bool { !isDeleting && !isMovingStorage && !exportQueue.isRunning && !exportQueue.isCollecting && !isChoosingCollectionFolder }
+
+    var canRunExportQueue: Bool
+    {
+        canStartWork && !isLoading && !isCreating
+            && owners.values.allSatisfy { !$0.isBusy && !$0.export.isLoadingHistory }
+    }
 
     var canMoveStorage: Bool
     {
-        canRequestDeletion && settings.canMoveStorage && !exportViewer.isLoading
+        canRequestDeletion && settings.canMoveStorage && !exportViewer.isLoading && !exportQueue.isBusy
             && !downloadQueue.hasActiveWork
             && owners.values.allSatisfy(\.canMoveStorage)
     }
@@ -98,13 +108,13 @@ final class EarthProjectLibraryViewModel
 
     func canEditMap(_ id: UUID) -> Bool
     {
-        guard !isDeleting, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isBusy else { return false }
+        guard canStartWork, let owner = owners[id], owner.phase == .idle, !owner.preview.isLoading, !owner.export.isBusy else { return false }
         return owner.canEditCurrentLocation
     }
 
     func canViewPreview(_ id: UUID, captureID: UUID) -> Bool
     {
-        guard !isDeleting, let owner = owners[id], owner.downloadJob(captureID)?.phase.isActive != true else { return false }
+        guard canStartWork, let owner = owners[id], owner.downloadJob(captureID)?.phase.isActive != true else { return false }
         return !owner.isBusy || (owner.selectedCaptureID == captureID && (owner.phase == .preparing || owner.preview.isLoading))
     }
 
@@ -168,6 +178,66 @@ final class EarthProjectLibraryViewModel
 
     func showSettings() { path.append(.settings) }
 
+    func showExportQueue() { path.append(.exportQueue) }
+
+    func isExportQueued(_ projectID: UUID, variantID: UUID) -> Bool
+    {
+        guard let owner = owners[projectID], let variant = owner.captures.first(where: { $0.id == variantID }),
+              let location = owner.locations.first(where: { $0.id == variant.locationID }),
+              let profile = try? variant.preparation?.profile ?? EarthPreparationProfile(name: "Project preview")
+        else { return false }
+        let request = EarthQueuedExportRequest(
+            projectID: projectID,
+            projectTitle: owner.displayTitle,
+            locationID: location.id,
+            locationName: location.name,
+            locationTitle: location.title,
+            variantID: variantID,
+            detail: variant.detail,
+            source: variant.capture,
+            preparationProfile: profile,
+            options: owner.export.options(for: variantID),
+            format: owner.export.format(for: variantID),
+            optimization: owner.export.optimization(for: variantID)
+        )
+        return exportQueue.containsPending(request)
+    }
+
+    func addExportToQueue(_ projectID: UUID, variantID: UUID)
+    {
+        guard canStartWork else { return }
+        owners[projectID]?.addExportToQueue(variantID, queue: exportQueue)
+    }
+
+    func startExportQueue()
+    {
+        guard canRunExportQueue else { return }
+        exportQueue.start
+        { [weak self] entry, progress in
+            guard let self, !isDeleting, !isMovingStorage,
+                  let owner = owners[entry.request.projectID] else { throw EarthAppFilesError.missingFile }
+            return try await owner.exportQueued(entry, cancel: { [weak self] in self?.exportQueue.cancel() }, progress: progress)
+        }
+    }
+
+    func chooseExportCollectionFolder()
+    {
+        guard canRunExportQueue, exportQueue.canCollect else { return }
+        isChoosingCollectionFolder = true
+        Task
+        { [self] in
+            defer { isChoosingCollectionFolder = false }
+            let panel = NSOpenPanel()
+            panel.canChooseDirectories = true
+            panel.canChooseFiles = false
+            panel.allowsMultipleSelection = false
+            panel.canCreateDirectories = true
+            panel.prompt = "Collect"
+            guard await panel.begin() == .OK, let destination = panel.url else { return }
+            exportQueue.collect(to: destination)
+        }
+    }
+
     func requestProjectDeletion(_ id: UUID)
     {
         guard canDeleteProject(id),
@@ -215,7 +285,7 @@ final class EarthProjectLibraryViewModel
                             switch route
                             {
                                 case let .project(projectID), let .preview(projectID): projectID == id
-                                case .settings: false
+                                case .settings, .exportQueue: false
                             }
                         }
                         errorMessage = nil
@@ -300,7 +370,7 @@ struct EarthProjectLibraryView: View
                 .navigationTitle("Projects")
                 .toolbar
                 {
-                    ToolbarItem(placement: .primaryAction) { Button("New", systemImage: "plus", action: viewModel.newProject).disabled(viewModel.isCreating || viewModel.isLoading || viewModel.isDeleting) }
+                    ToolbarItem(placement: .primaryAction) { Button("New", systemImage: "plus", action: viewModel.newProject).disabled(!viewModel.canStartWork || viewModel.isCreating || viewModel.isLoading) }
                     ToolbarItem { Button("Settings", systemImage: "gearshape", action: viewModel.showSettings) }
                 }
                 .navigationDestination(for: EarthAppRoute.self)
@@ -318,6 +388,7 @@ struct EarthProjectLibraryView: View
                                     .navigationSubtitle(project.selectedCapture?.title ?? "")
                             }
                         case .settings: EarthSettingsView(viewModel: viewModel.settings)
+                        case .exportQueue: EarthExportQueueView(queue: viewModel.exportQueue, library: viewModel)
                     }
                 }
         }
@@ -368,7 +439,7 @@ struct EarthProjectLibraryView: View
                 {
                     Label("No Projects", systemImage: "folder")
                 } actions: {
-                    Button("New Project", action: viewModel.newProject).buttonStyle(.borderedProminent).disabled(viewModel.isCreating || viewModel.isDeleting)
+                    Button("New Project", action: viewModel.newProject).buttonStyle(.borderedProminent).disabled(!viewModel.canStartWork || viewModel.isCreating)
                 }
             }
             else
@@ -396,6 +467,10 @@ struct EarthProjectLibraryView: View
                     }
                 }
             }
+            Divider()
+            Button(viewModel.exportQueue.buttonTitle, action: viewModel.showExportQueue)
+                .buttonStyle(.bordered)
+                .padding()
         }
     }
 }

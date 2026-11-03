@@ -57,11 +57,36 @@ actor EarthProjectExportService
         self.cityLookup = cityLookup
     }
 
+    func queuedRequest(variantID: UUID, options: EarthExportOptions, format: EarthExportFormat, optimization: EarthExportOptimizationSettings) async throws -> EarthQueuedExportRequest
+    {
+        let source = try await store.openVariant(id: projectID, variantID: variantID)
+        guard source.archive.state == .downloaded else { throw EarthGLBExportError.sourceChanged }
+        let project = try await store.record(id: projectID)
+        let request = try EarthQueuedExportRequest(
+            projectID: projectID,
+            projectTitle: project.displayTitle,
+            locationID: source.location.id,
+            locationName: source.location.name,
+            locationTitle: source.location.title,
+            variantID: variantID,
+            detail: source.variant.detail,
+            source: source.variant.capture,
+            preparationProfile: source.variant.preparation?.profile ?? EarthPreparationProfile(name: "Project preview"),
+            options: options,
+            format: format,
+            optimization: optimization
+        )
+        try request.validate()
+        return request
+    }
+
     func export(
         variantID: UUID,
         options: EarthExportOptions,
         format: EarthExportFormat = .glb,
         optimization: EarthExportOptimizationSettings = .init(),
+        queuedRequest: EarthQueuedExportRequest? = nil,
+        exportID: UUID = UUID(),
         progress: @escaping @Sendable (EarthProjectExportProgress) -> Void
     ) async throws -> EarthProjectExportResult
     {
@@ -72,6 +97,16 @@ actor EarthProjectExportService
         _ = try await history.records()
         var source = try await store.openVariant(id: projectID, variantID: variantID)
         guard source.archive.state == .downloaded else { throw EarthGLBExportError.sourceChanged }
+        if let queuedRequest
+        {
+            try queuedRequest.validate()
+            let profile = try source.variant.preparation?.profile ?? EarthPreparationProfile(name: "Project preview")
+            guard queuedRequest.projectID == projectID, queuedRequest.variantID == variantID,
+                  queuedRequest.locationID == source.location.id, queuedRequest.source == source.variant.capture,
+                  queuedRequest.detail == source.variant.detail, queuedRequest.preparationProfile == profile,
+                  queuedRequest.options == options, queuedRequest.format == format, queuedRequest.optimization == optimization
+            else { throw EarthGLBExportError.sourceChanged }
+        }
         let sourceAccess = try await files.accessForReading(source.archive.directoryURL)
         defer { withExtendedLifetime(sourceAccess) {} }
         if source.prepared?.state != .ready || source.prepared?.coversEntireSource != true
@@ -94,7 +129,7 @@ actor EarthProjectExportService
         else { throw EarthGLBExportError.sourceChanged }
         let preparedAccess = try await files.accessForReading(collection.directoryURL)
         defer { withExtendedLifetime(preparedAccess) {} }
-        let identity = try EarthCaptureIdentity(locationName: source.location.title, request: source.variant.capture.request, detailName: source.variant.detail.rawValue)
+        let identity = try EarthCaptureIdentity(locationName: queuedRequest?.locationTitle ?? source.location.title, request: source.variant.capture.request, detailName: source.variant.detail.rawValue)
         let preparedIdentity = try EarthCaptureIdentity(locationName: source.location.title, request: source.variant.capture.request, detailName: source.variant.title)
         try await captureStore.recordIdentity(preparedIdentity, collection: collection)
         let destination = try EarthPreparationProfile(
@@ -126,8 +161,8 @@ actor EarthProjectExportService
         guard current.captures.first(where: { $0.id == variantID }) == source.variant,
               current.locations.first(where: { $0.id == source.location.id })?.name == source.location.name
         else { throw EarthGLBExportError.sourceChanged }
-        let name = source.location.name.exportName(request: source.variant.capture.request)
-        let output = try await files.newExportDestination(projectID: projectID, name: name, detail: source.variant.detail, options: options, format: format)
+        let name = (queuedRequest?.locationName ?? source.location.name).exportName(request: source.variant.capture.request)
+        let output = try await files.newExportDestination(projectID: projectID, name: name, detail: source.variant.detail, options: options, format: format, exportID: exportID)
         let fileURL: URL
         var infoWarning: String?
         do
