@@ -249,6 +249,8 @@ private func projectLocationFreezesBeforeTransferAndPreparesOffline(outcome: Pro
     {
         let result = try await service.prepareModels(archive: completed, progress: { _ in })
         #expect(try await store.open(id: project.id).prepared?.directoryURL == result.directoryURL)
+        let info = try JSONDecoder().decode(EarthCaptureIdentity.self, from: Data(contentsOf: result.directoryURL.appendingPathComponent("capture.info.json")))
+        #expect(info.locationName == "Race" && info.detailName == "High" && info.request == completed.request)
     }
     #expect(try await store.record(id: project.id).locations[0].area == selection.area)
 }

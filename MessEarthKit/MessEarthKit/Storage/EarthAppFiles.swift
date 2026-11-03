@@ -12,19 +12,23 @@ enum EarthAppFilesError: Error, Equatable, LocalizedError, Sendable
     case deletionIncomplete
     case renameIncomplete
     case invalidExportName
+    case exportInUse
+    case exportChanged
 
     var errorDescription: String?
     {
         switch self
         {
-            case .unavailableRoot: "The MessEarthKit documents folder is unavailable."
+            case .unavailableRoot: "The MessEarthKit storage folder is unavailable."
             case .invalidLocation: "The file location is outside its permitted storage area or contains an unsupported link."
             case .missingFile: "A required project file is missing."
             case .invalidMetadata: "The project metadata is empty, oversized or invalid."
             case .storage: "The file operation failed. Check folder access and available disk space."
             case .deletionIncomplete: "Deletion could not finish or fully restore its files. Refresh the project to review its saved state. Retained files may be in Trash or the project's deletion folder."
             case .renameIncomplete: "Rename could not finish or fully restore its files. Reload export history and review the export folder in Finder."
-            case .invalidExportName: "Enter a shorter filename using letters, numbers, spaces, periods, hyphens or underscores. The .glb extension is kept."
+            case .exportChanged: "The exported file changed while the viewer was loading. Open it again."
+            case .exportInUse: "An export is still loading in the viewer. Close it or wait for loading to finish before changing its files."
+            case .invalidExportName: "Enter a shorter filename using letters, numbers, spaces, periods, hyphens or underscores. The export extension is kept."
         }
     }
 }
@@ -69,7 +73,7 @@ final class EarthFileAccess: @unchecked Sendable
 {
     let url: URL
     fileprivate let isDirectory: Bool
-    private let scopedURL: URL
+    fileprivate let scopedURL: URL
     private let isAccessing: Bool
 
     fileprivate init(url: URL, isDirectory: Bool, scopedURL: URL)
@@ -90,23 +94,123 @@ actor EarthAppFiles
     typealias Trash = @Sendable (URL) throws -> Void
     static let maximumMetadataBytes = 1024 * 1024
     nonisolated let storageRootURL: URL
+    private let rootAccess: EarthFileAccess
+    private var exportReads: [UUID: (projectID: UUID, exportID: UUID)] = [:]
     private let trash: Trash
+    private var isMovingStorage = false
+    private var storageWasMoved = false
+
+    private struct StorageLocation: Codable
+    {
+        let version: Int
+        let bookmark: Data
+    }
 
     init(storageRootURL: URL, trash: @escaping Trash = EarthAppFiles.moveToTrash) throws
     {
         guard storageRootURL.isFileURL, !storageRootURL.pathComponents.contains(".."), storageRootURL.path != "/"
         else { throw EarthAppFilesError.invalidLocation }
         self.storageRootURL = storageRootURL.standardizedFileURL
+        rootAccess = EarthFileAccess(url: storageRootURL, isDirectory: true, scopedURL: storageRootURL)
         self.trash = trash
     }
 
-    static func openDefault() async throws -> EarthAppFiles
+    @concurrent static func openDefault() async throws -> EarthAppFiles
     {
         guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
         else { throw EarthAppFilesError.unavailableRoot }
-        let files = try EarthAppFiles(storageRootURL: documents.appendingPathComponent("MessEarthKit", isDirectory: true))
-        try await files.initialize()
-        return files
+        return try await openStorage(defaultRoot: documents.appendingPathComponent("MessEarthKit", isDirectory: true), selectionFile: storageLocationFileURL())
+    }
+
+    static func storageLocationFileURL() throws -> URL
+    {
+        guard let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { throw EarthAppFilesError.unavailableRoot }
+        return support.appendingPathComponent("MessEarthKit/StorageLocation.json")
+    }
+
+    /// The bootstrap selection stays outside movable project/settings storage.
+    /// An explicit but unusable selection never falls back to a new library.
+    @concurrent static func openStorage(defaultRoot: URL, selectionFile: URL) async throws -> EarthAppFiles
+    {
+        do
+        {
+            let files: EarthAppFiles
+            let selectionAttributes: [FileAttributeKey: Any]?
+            do { selectionAttributes = try FileManager.default.attributesOfItem(atPath: selectionFile.path) }
+            catch let error as NSError where error.domain == NSCocoaErrorDomain && (error.code == NSFileNoSuchFileError || error.code == NSFileReadNoSuchFileError) { selectionAttributes = nil }
+            if let selectionAttributes
+            {
+                guard selectionAttributes[.type] as? FileAttributeType == .typeRegular else { throw EarthStorageMoveError.bookmark }
+                let input = try FileHandle(forReadingFrom: selectionFile)
+                defer { try? input.close() }
+                let data = try input.read(upToCount: maximumMetadataBytes + 1) ?? Data()
+                guard !data.isEmpty, data.count <= maximumMetadataBytes else { throw EarthStorageMoveError.bookmark }
+                let selection = try JSONDecoder().decode(StorageLocation.self, from: data)
+                guard selection.version == 1, !selection.bookmark.isEmpty else { throw EarthStorageMoveError.bookmark }
+                var stale = false
+                let root = try URL(resolvingBookmarkData: selection.bookmark, options: [.withSecurityScope, .withoutUI, .withoutMounting], relativeTo: nil, bookmarkDataIsStale: &stale)
+                files = try EarthAppFiles(storageRootURL: root)
+                try await files.requireExistingStorage()
+                if stale { try saveStorageLocation(root, selectionFile: selectionFile) }
+            }
+            else { files = try EarthAppFiles(storageRootURL: defaultRoot) }
+            try await files.initialize()
+            return files
+        }
+        catch let error as EarthStorageMoveError { throw error }
+        catch { throw EarthAppFilesError.unavailableRoot }
+    }
+
+    /// Called only after app owners settle their jobs/saves and close databases.
+    /// No actor reentrancy during copy/commit; old owners reject subsequent I/O.
+    func moveStorage(to destination: URL, selectionFile: URL, progress: @Sendable (String) -> Void) throws -> EarthStorageMoveResult
+    {
+        guard !isMovingStorage, !storageWasMoved, exportReads.isEmpty else { throw EarthStorageMoveError.busy }
+        let target = try EarthAppFiles(storageRootURL: destination)
+        let relocation: EarthStorageRelocation
+        do { relocation = try EarthStorageRelocation(source: storageRootURL, destination: target.storageRootURL, selectionFile: selectionFile) }
+        catch let error as EarthStorageMoveError { throw error }
+        catch { throw EarthStorageMoveError.unavailable }
+        isMovingStorage = true
+        defer { isMovingStorage = false }
+        do
+        {
+            try relocation.copyAndPublish(progress: progress)
+            try Task.checkCancellation()
+            try Self.saveStorageLocation(destination, selectionFile: selectionFile)
+        }
+        catch
+        {
+            do { try relocation.rollback() }
+            catch { throw EarthStorageMoveError.rollbackIncomplete }
+            if error is CancellationError { throw CancellationError() }
+            if let error = error as? EarthStorageMoveError { throw error }
+            throw EarthStorageMoveError.failed
+        }
+        storageWasMoved = true
+        progress("Removing previous storage copies…")
+        let removed = relocation.removeOldCopies()
+        return EarthStorageMoveResult(files: target, previousRoot: storageRootURL, oldCopiesRemain: !removed)
+    }
+
+    private func requireExistingStorage() throws
+    {
+        guard try attributes(storageRootURL)?[.type] as? FileAttributeType == .typeDirectory,
+              FileManager.default.isWritableFile(atPath: storageRootURL.path)
+        else { throw EarthStorageMoveError.unavailable }
+    }
+
+    private static func saveStorageLocation(_ root: URL, selectionFile: URL) throws
+    {
+        do
+        {
+            let bookmark = try root.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+            let data = try JSONEncoder().encode(StorageLocation(version: 1, bookmark: bookmark))
+            guard data.count <= maximumMetadataBytes else { throw EarthStorageMoveError.bookmark }
+            try FileManager.default.createDirectory(at: selectionFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try data.write(to: selectionFile, options: .atomic)
+        }
+        catch { throw EarthStorageMoveError.bookmark }
     }
 
     func initialize() throws
@@ -158,6 +262,7 @@ actor EarthAppFiles
 
     func trashProject(id: UUID) throws
     {
+        guard !exportReads.values.contains(where: { $0.projectID == id }) else { throw EarthAppFilesError.exportInUse }
         let folder = try projectLocations(id: id).directoryURL
         guard let values = try attributes(folder), values[.type] as? FileAttributeType == .typeDirectory
         else { throw EarthAppFilesError.missingFile }
@@ -244,7 +349,12 @@ actor EarthAppFiles
     /// Each export owns a fresh output folder; SDK publication creates the file.
     func newGLBExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, options: EarthGLBExportOptions) throws -> EarthProjectExportDestination
     {
-        let fileName = try glbExportFileName(name: name, detail: detail, options: options)
+        try newExportDestination(projectID: projectID, name: name, detail: detail, options: options, format: .glb)
+    }
+
+    func newExportDestination(projectID: UUID, name: String, detail: EarthProjectDetail, options: EarthExportOptions, format: EarthExportFormat) throws -> EarthProjectExportDestination
+    {
+        let fileName = try exportFileName(name: name, detail: detail, options: options, format: format)
         let directory = try newArtifactDirectory(projectID: projectID, kind: .output)
         try ensureManagedDirectory(directory)
         guard let id = UUID(uuidString: directory.lastPathComponent) else { throw EarthAppFilesError.invalidLocation }
@@ -254,6 +364,11 @@ actor EarthAppFiles
     /// Naming suggestions use the same rules without creating an output folder.
     /// Older files without recorded channel choices omit the content suffix.
     func glbExportFileName(name: String, detail: EarthProjectDetail, options: EarthGLBExportOptions?) throws -> String
+    {
+        try exportFileName(name: name, detail: detail, options: options, format: .glb)
+    }
+
+    func exportFileName(name: String, detail: EarthProjectDetail, options: EarthExportOptions?, format: EarthExportFormat) throws -> String
     {
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: ".-_"))
         var stem = name.components(separatedBy: allowed.inverted).filter { !$0.isEmpty }.joined(separator: "_")
@@ -271,7 +386,33 @@ actor EarthAppFiles
             if options.includeTextures { contents.append("tex") }
             suffix = "_" + contents.joined(separator: "_")
         }
-        return "\(stem)_\(detail.title)\(suffix).glb"
+        let optimized = format.isOptimized ? "_optimized" : ""
+        return "\(stem)_\(detail.title)\(optimized)\(suffix).\(format.fileExtension)"
+    }
+
+    /// Reentrant actor scope: loading never blocks unrelated metadata work, but
+    /// mutations of this export/project cannot move files still used by a decoder.
+    func withExportRead<Result: Sendable>(projectID: UUID, record: EarthProjectExportRecord, operation: @Sendable (URL, Int) async throws -> Result) async throws -> Result
+    {
+        try Task.checkCancellation()
+        let url = try exportFileURL(projectID: projectID, record: record)
+        let access = try accessForReading(url)
+        guard let size = try exportFileByteCount(projectID: projectID, record: record), let before = try attributes(url) else { throw EarthAppFilesError.missingFile }
+        let token = UUID()
+        exportReads[token] = (projectID, record.id)
+        defer { exportReads.removeValue(forKey: token); withExtendedLifetime(access) {} }
+        let result = try await operation(url, size)
+        try Task.checkCancellation()
+        guard let after = try attributes(url), before[.size] as? NSNumber == after[.size] as? NSNumber,
+              before[.modificationDate] as? Date == after[.modificationDate] as? Date,
+              before[.systemFileNumber] as? NSNumber == after[.systemFileNumber] as? NSNumber
+        else { throw EarthAppFilesError.exportChanged }
+        return result
+    }
+
+    private func requireExportIdle(projectID: UUID, exportID: UUID) throws
+    {
+        guard !exportReads.values.contains(where: { $0.projectID == projectID && $0.exportID == exportID }) else { throw EarthAppFilesError.exportInUse }
     }
 
     func exportFileURL(projectID: UUID, record: EarthProjectExportRecord) throws -> URL
@@ -281,40 +422,49 @@ actor EarthAppFiles
     }
 
     func exportFileIsAvailable(projectID: UUID, record: EarthProjectExportRecord) throws -> Bool
+    { try exportFileByteCount(projectID: projectID, record: record) != nil }
+
+    func exportFileByteCount(projectID: UUID, record: EarthProjectExportRecord) throws -> Int?
     {
         let url = try exportFileURL(projectID: projectID, record: record)
-        guard let values = try attributes(url) else { return false }
+        guard let values = try attributes(url) else { return nil }
         guard values[.type] as? FileAttributeType == .typeRegular, let size = values[.size] as? NSNumber
         else { throw EarthAppFilesError.invalidLocation }
-        return size.intValue > 0
+        return size.intValue > 0 ? size.intValue : nil
     }
 
     /// Keep the optional companion with its GLB. All moves and the metadata
     /// write run without actor suspension; ordinary failures restore the files.
     func renameExport(projectID: UUID, record: EarthProjectExportRecord, name: String, originalMetadata: Data, updatedMetadata: Data) throws
     {
+        try requireExportIdle(projectID: projectID, exportID: record.id)
         guard try readMetadata(.exports(projectID)) == originalMetadata else { throw EarthAppFilesError.invalidMetadata }
         let renamed = try record.renamed(to: name)
         guard try exportFileIsAvailable(projectID: projectID, record: record) else { throw EarthAppFilesError.missingFile }
         if renamed.fileName == record.fileName { return }
         let original = try exportFileURL(projectID: projectID, record: record)
         let destination = try exportFileURL(projectID: projectID, record: renamed)
-        let companion = try checkedManagedURL(EarthGLBInfo.companionURL(original))
-        let renamedCompanion = try checkedManagedURL(EarthGLBInfo.companionURL(destination))
-        if let values = try attributes(companion), values[.type] as? FileAttributeType != .typeRegular
-        { throw EarthAppFilesError.invalidLocation }
-        // Do not overwrite any existing file, including an untracked companion.
-        try checkExportRenameDestination(destination, original: original)
-        try checkExportRenameDestination(renamedCompanion, original: companion)
+        var moves = [(original: original, destination: destination)]
+        if record.format == .glb
+        {
+            let companion = try checkedManagedURL(EarthGLBInfo.companionURL(original))
+            let renamedCompanion = try checkedManagedURL(EarthGLBInfo.companionURL(destination))
+            if let values = try attributes(companion)
+            {
+                guard values[.type] as? FileAttributeType == .typeRegular else { throw EarthAppFilesError.invalidLocation }
+                moves.append((companion, renamedCompanion))
+            }
+            // Also reserve the optional companion's destination when absent.
+            try checkExportRenameDestination(renamedCompanion, original: companion)
+        }
+        for move in moves { try checkExportRenameDestination(move.destination, original: move.original) }
         var moved: [(original: URL, destination: URL)] = []
         do
         {
-            try FileManager.default.moveItem(at: original, to: destination)
-            moved.append((original, destination))
-            if try attributes(companion) != nil
+            for move in moves
             {
-                try FileManager.default.moveItem(at: companion, to: renamedCompanion)
-                moved.append((companion, renamedCompanion))
+                try FileManager.default.moveItem(at: move.original, to: move.destination)
+                moved.append(move)
             }
             try writeMetadata(updatedMetadata, location: .exports(projectID))
         }
@@ -344,6 +494,7 @@ actor EarthAppFiles
     /// A missing folder can still be explicitly removed from history.
     func trashExport(projectID: UUID, record: EarthProjectExportRecord, originalMetadata: Data, updatedMetadata: Data) throws
     {
+        try requireExportIdle(projectID: projectID, exportID: record.id)
         guard try readMetadata(.exports(projectID)) == originalMetadata else { throw EarthAppFilesError.invalidMetadata }
         let directory = try exportFileURL(projectID: projectID, record: record).deletingLastPathComponent()
         try validateArtifactDirectory(directory, projectID: projectID, kind: .output)
@@ -451,17 +602,18 @@ actor EarthAppFiles
     {
         guard url.isFileURL, !url.pathComponents.contains("..") else { throw EarthAppFilesError.invalidLocation }
         // Start the scope before inspecting a user-authorized external URL.
-        let access = EarthFileAccess(url: url, isDirectory: true, scopedURL: url)
+        let scopedURL = contains(url, root: storageRootURL) ? rootAccess.scopedURL : url
+        let access = EarthFileAccess(url: url, isDirectory: true, scopedURL: scopedURL)
         guard let values = try attributes(url), let type = values[.type] as? FileAttributeType,
               type == .typeDirectory || type == .typeRegular else { throw EarthAppFilesError.missingFile }
         if contains(url, root: storageRootURL) { _ = try checkedManagedURL(url) }
-        return type == .typeDirectory ? access : EarthFileAccess(url: url, isDirectory: false, scopedURL: url)
+        return type == .typeDirectory ? access : EarthFileAccess(url: url, isDirectory: false, scopedURL: scopedURL)
     }
 
     func accessForExport(_ url: URL) throws -> EarthFileAccess
     {
         guard url.isFileURL, !url.pathComponents.contains("..") else { throw EarthAppFilesError.invalidLocation }
-        let access = EarthFileAccess(url: url, isDirectory: true, scopedURL: url)
+        let access = EarthFileAccess(url: url, isDirectory: true, scopedURL: contains(url, root: storageRootURL) ? rootAccess.scopedURL : url)
         if contains(url, root: storageRootURL)
         {
             _ = try checkedManagedURL(url)
@@ -523,6 +675,7 @@ actor EarthAppFiles
 
     private func checkedManagedURL(_ url: URL) throws -> URL
     {
+        guard !isMovingStorage, !storageWasMoved else { throw EarthStorageMoveError.busy }
         guard url.isFileURL, !url.pathComponents.contains(".."), contains(url, root: storageRootURL)
         else { throw EarthAppFilesError.invalidLocation }
         let checked = url.standardizedFileURL

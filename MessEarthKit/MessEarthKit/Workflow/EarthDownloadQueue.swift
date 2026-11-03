@@ -58,6 +58,8 @@ final class EarthDownloadQueue
     typealias Prepare = @Sendable (EarthSourceArchive, @escaping @Sendable (EarthPreparationProgress) -> Void) async throws -> EarthPreparedCollection
 
     private(set) var jobs: [EarthDownloadJobID: EarthDownloadJob] = [:]
+    private(set) var pendingCompletions = 0
+    var hasActiveWork: Bool { pendingCompletions > 0 || jobs.values.contains { $0.phase.isActive } }
     @ObservationIgnored private var work: [EarthDownloadJobID: Work] = [:]
     @ObservationIgnored private var downloadOrder: [EarthDownloadJobID] = []
     @ObservationIgnored private var preparationOrder: [EarthDownloadJobID] = []
@@ -185,6 +187,8 @@ final class EarthDownloadQueue
     private func finish(_ job: EarthDownloadJob, error: (any Error)?) async
     {
         guard jobs[job.id]?.generation == job.generation, let operation = work.removeValue(forKey: job.id) else { return }
+        pendingCompletions += 1
+        defer { pendingCompletions -= 1 }
         downloading[job.id] = nil
         preparing[job.id] = nil
         if let error

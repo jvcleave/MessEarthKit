@@ -24,7 +24,8 @@ overwritten. A thumbnail or companion failure cannot remove a published GLB;
 the delivery reports a warning and the app still records its export history.
 
 The optional `EarthGLBExportPreview` contains awaited, actor-neutral `consume`
-and `finish` callbacks. `consume` receives the current decoded prepared part;
+and `finish` callbacks. `consume` receives the current delivered part. Optimized
+GLB parts contain reduced geometry and regenerated flat normals when omitted;
 release it before returning. `finish` returns PNG data after all parts succeed.
 Rendering and file authorization belong to the host, not the SDK. A failed part
 omits the entire thumbnail rather than presenting an incomplete region.
@@ -38,9 +39,10 @@ releases each part after GPU completion. Each upload is admitted against a
 ## JSON schema 1
 
 The file is UTF-8 JSON, at most 1 MiB. Dates use ISO 8601 UTC. Every top-level key
-below is required except the additive location fields `geographicOrigin` and
-`captureIdentity`, which readers accept as absent or null in existing schema-1
-companions. New exports write both keys. An unavailable thumbnail is an explicit
+below is required except `geographicOrigin`, `captureIdentity` and `optimization`.
+Readers accept absent or null location fields in existing schema-1 companions.
+An optional `optimization` object records a reduced delivery. New
+exports write both location keys. An unavailable thumbnail is an explicit
 JSON null.
 
 | Field | Value |
@@ -51,6 +53,7 @@ JSON null.
 | `glb` | `fileName`, positive `byteCount`, and lowercase 64-character SHA-256 `sha256`. |
 | `geometry` | Positive `vertexCount`, `triangleCount`, `meshCount`; nonnegative `materialCount`, `textureCount`; three-element finite `minimum` and `maximum` arrays. |
 | `exportOptions` | Boolean `includeNormals`, `includeVertexColors`, `includeTextureCoordinates`, `includeMaterials`, `includeTextures`. Textures require UVs and materials. |
+| `optimization` | Present for Optimized GLB: `profile` with `triangleFraction` and `maximumErrorMeters`; positive `sourceVertexCount`, `sourceTriangleCount`, `vertexCount` and `triangleCount`; achieved `maximumErrorMeters`. Output counts match `geometry`; ordinary GLB omits this key. |
 | `attributions` | Array of source attribution strings. |
 | `geographicOrigin` | WGS84 `latitude` and `longitude` in degrees, and `ellipsoidHeight` in meters. New exports always include this object; absent or null in older companions. |
 | `captureIdentity` | Null when preflight has no capture identity; otherwise `formatVersion: 1`, `locationName`, `detailName` and `request` as described below. |
@@ -60,6 +63,8 @@ Bounds describe the exported vertices in local meters: East +X, Up +Y, North -Z.
 Triangle and mesh counts describe the actual combined GLB; omitted materials and
 textures have zero counts. The GLB itself retains capture identity and geographic
 placement. Renaming a library label need not rewrite either source file.
+Vertex counts describe stored position accessors. Readers and thumbnails may
+expand triangle corners when reconstructing omitted flat normals.
 
 `captureIdentity.request` contains `center` (the same three fields as
 `geographicOrigin`), `widthMeters`, `depthMeters` and

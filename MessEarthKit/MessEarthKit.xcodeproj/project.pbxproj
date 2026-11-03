@@ -23,6 +23,7 @@
 				Storage/Tests/EarthProjectDeletionTests.swift,
 				Storage/Tests/EarthProjectStoreTests.swift,
 				Workflow/Tests/EarthDownloadQueueTests.swift,
+				Workflow/Tests/EarthExportViewerTests.swift,
 				Workflow/Tests/EarthMapAreaEditingTests.swift,
 				Workflow/Tests/EarthProjectCaptureTests.swift,
 				Workflow/Tests/EarthProjectExportTests.swift,

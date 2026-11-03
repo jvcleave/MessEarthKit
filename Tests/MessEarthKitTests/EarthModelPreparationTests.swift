@@ -5,7 +5,7 @@ import Testing
 
 /// Builds a valid raw artifact from the independent authored orientation GLB.
 /// Payloads are streamed; many placements reuse a small source asset.
-func preparationArchive(parent: URL, count: Int, largePayloads: Int = 0, uniqueSmallPayloads: Bool = false, compressed: Bool = false, sourceOverride: Data? = nil) throws -> EarthSourceArchive
+func preparationArchive(parent: URL, count: Int, largePayloads: Int = 0, uniqueSmallPayloads: Bool = false, compressed: Bool = false, sourceOverride: Data? = nil, transformOverride: simd_double4x4? = nil) throws -> EarthSourceArchive
 {
     let resources = try precheckFixtureResources(flatNormals: false)
     let original: Data
@@ -38,7 +38,7 @@ func preparationArchive(parent: URL, count: Int, largePayloads: Int = 0, uniqueS
     {
         var placement = matrix_identity_double4x4
         placement.columns.3.x = -5 + Double(ordinal) * 10
-        let transform = earth * placement
+        let transform = transformOverride ?? earth * placement
         let columns = [transform.columns.0, transform.columns.1, transform.columns.2, transform.columns.3]
         let id = ids[min(ordinal, ids.count - 1)]
         let tile = EarthTileset.Tile(boundingVolume: .init(box: nil, sphere: [2, 2, 1, 6], region: nil), geometricError: 0, transform: columns.flatMap { [$0.x, $0.y, $0.z, $0.w] }, refine: "REPLACE", content: .init(uri: "tiles/\(id).glb"), contents: nil, children: nil, implicitTiling: nil)
@@ -88,6 +88,42 @@ func preparationParent() throws -> URL
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
     return directory
+}
+
+@Test func preparedCaptureIdentitySurvivesSubsetExportWithoutChangingSources() async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let raw = try preparationArchive(parent: parent, count: 3)
+    let sourceBytes = try Data(contentsOf: #require(raw.rootSourceURL))
+    let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
+    let catalog = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
+    let models = try await catalog.models()
+    let firstModel = try #require(models.first)
+    let modelBytes = try Data(contentsOf: firstModel.rootSourceURL)
+    let identity = try EarthCaptureIdentity(locationName: "Brooklyn", request: raw.request, detailName: "High")
+    let store = EarthCaptureStore()
+    try await store.recordIdentity(identity, collection: catalog)
+    let rootInfo = try #require(try EarthPreparedCaptureInfo.read(files: EarthAcquisitionFiles(directoryURL: catalog.directoryURL)))
+    #expect(rootInfo.info.identity == identity && rootInfo.info.modelID == nil)
+    #expect(try Data(contentsOf: #require(raw.rootSourceURL)) == sourceBytes)
+    #expect(try Data(contentsOf: firstModel.rootSourceURL) == modelBytes)
+
+    let saved = try await store.save(collection: catalog, selection: .only([2, 3]), directoryURL: parent.appendingPathComponent("subset"))
+    let subset = try await EarthPreparedCollection.open(directoryURL: saved.deletingLastPathComponent())
+    let copiedInfo = try #require(try EarthPreparedCaptureInfo.read(files: EarthAcquisitionFiles(directoryURL: subset.directoryURL)))
+    #expect(copiedInfo.data == rootInfo.data)
+    for model in try await subset.models()
+    {
+        let info = try #require(try EarthPreparedCaptureInfo.read(files: EarthAcquisitionFiles(directoryURL: model.rootSourceURL.deletingLastPathComponent())))
+        #expect(info.info.identity == identity && info.info.modelID == model.id)
+    }
+    let wrongRequest = try EarthDownloadRequest(center: EarthGeographicOrigin(latitude: 1, longitude: 0), widthMeters: 20, depthMeters: 20)
+    let wrongIdentity = try EarthCaptureIdentity(locationName: "Different capture", request: wrongRequest, detailName: "High")
+    await #expect(throws: EarthPreparationError.sourceChanged)
+    { try await store.recordIdentity(wrongIdentity, collection: catalog) }
+    let unchanged = try #require(try EarthPreparedCaptureInfo.read(files: EarthAcquisitionFiles(directoryURL: catalog.directoryURL)))
+    #expect(unchanged.data == rootInfo.data)
 }
 
 @Test func fileBackedPreparationPagesLargeCaptureAndExportsAlignedSubset() async throws

@@ -6,7 +6,7 @@ import simd
 import Testing
 import UniformTypeIdentifiers
 
-private enum TextureSamplingCase: CaseIterable, Sendable
+enum TextureSamplingCase: CaseIterable, Sendable
 {
     case nearestClamp, linearClamp, nearestRepeat, linearRepeat, nearestMirror, linearMirror, mixedAxes
     var linear: Bool { [.linearClamp, .linearRepeat, .linearMirror, .mixedAxes].contains(self) }
@@ -55,7 +55,7 @@ private func textureFixtureImage(sixteenBits: Bool = false, zeroAlphaPixel: Bool
     return data as Data
 }
 
-private func textureFixture(sampling: TextureSamplingCase = .nearestClamp, mipmap: EarthMipmapFilter = .none, sixteenBits: Bool = false, zeroAlphaPixel: Bool = false) throws -> (EarthMesh, EarthMaterial)
+func textureFixture(sampling: TextureSamplingCase = .nearestClamp, mipmap: EarthMipmapFilter = .none, sixteenBits: Bool = false, zeroAlphaPixel: Bool = false) throws -> (EarthMesh, EarthMaterial)
 {
     let texture = EarthTexture(
         encodedImage: try textureFixtureImage(sixteenBits: sixteenBits, zeroAlphaPixel: zeroAlphaPixel),

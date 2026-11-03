@@ -7,6 +7,8 @@ struct EarthProjectExportControls: View
     let isDownloaded: Bool
     let canStartWork: Bool
     let startExport: () -> Void
+    @Environment(EarthExportViewerViewModel.self) private var viewer
+    @Environment(\.openWindow) private var openWindow
     @State private var renameDraft: EarthExportRenameViewModel?
     @State private var deletingExport: EarthProjectExportRecord?
 
@@ -17,9 +19,18 @@ struct EarthProjectExportControls: View
         {
             Divider()
             Text("Export").font(.subheadline.bold())
+            Picker("Format", selection: Binding(get: { export.format(for: variantID) }, set: { export.setFormat($0, variantID: variantID) }))
+            {
+                ForEach(EarthExportFormat.allCases) { format in Text(format.rawValue).tag(format) }
+            }.disabled(!canStartWork)
+            if export.format(for: variantID).isOptimized
+            {
+                EarthExportOptimizationControls(settings: export.optimization(for: variantID), showsTextureOptions: export.format(for: variantID) == .optimizedUSDZ, setSettings: { export.setOptimization($0, variantID: variantID) })
+                    .disabled(!canStartWork)
+            }
             HStack
             {
-                Button(exports.isEmpty ? "Export GLB" : "Export Again", action: startExport)
+                Button("Export \(export.format(for: variantID).rawValue)", action: startExport)
                     .disabled(!isDownloaded || !canStartWork || export.isLoadingHistory || export.historyError != nil)
                 if export.isLoadingHistory || export.isManagingHistory { ProgressView().controlSize(.small) }
             }
@@ -54,6 +65,7 @@ struct EarthProjectExportControls: View
             { item in
                 VStack(alignment: .leading, spacing: 4)
                 {
+                    Text(item.deliverySummary).font(.caption.bold())
                     Text(item.contentsSummary).font(.caption).fixedSize(horizontal: false, vertical: true)
                     if !item.fileIsAvailable { Text("File unavailable").font(.caption).foregroundStyle(.secondary) }
                     if let error = item.contentsError
@@ -61,12 +73,17 @@ struct EarthProjectExportControls: View
                     Text(item.record.fileName).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                     HStack
                     {
+                        Button("VIEW")
+                        {
+                            viewer.open(.init(projectID: export.projectID, variantID: variantID, exportID: item.id), title: item.record.fileName)
+                            openWindow(id: "export-viewer")
+                        }.disabled(!item.fileIsAvailable || !canStartWork)
                         Button("Rename…")
                         {
                             renameDraft = export.renameDraft(for: item.record)
-                        }.disabled(!item.fileIsAvailable || !canStartWork || export.isLoadingHistory)
+                        }.disabled(!item.fileIsAvailable || !canStartWork || export.isLoadingHistory || viewerIsReading(item.record))
                         Button("Delete…", role: .destructive) { deletingExport = item.record }
-                            .disabled(!canStartWork || export.isLoadingHistory)
+                            .disabled(!canStartWork || export.isLoadingHistory || viewerIsReading(item.record))
                         if item.fileIsAvailable
                         { Button("Show in Finder") { export.reveal(item.record) } }
                     }
@@ -85,8 +102,8 @@ struct EarthProjectExportControls: View
         }
         .sheet(item: $renameDraft)
         { draft in
-            EarthExportRenameView(viewModel: draft, canRename: canStartWork)
-            { if canStartWork { export.rename(draft.record, to: draft.name) } }
+            EarthExportRenameView(viewModel: draft, canRename: canStartWork && !viewerIsReading(draft.record))
+            { if canStartWork && !viewerIsReading(draft.record) { export.rename(draft.record, to: draft.name) } }
         }
         .alert(
             "Delete Export?",
@@ -94,10 +111,13 @@ struct EarthProjectExportControls: View
             presenting: deletingExport
         )
         { record in
-            Button("Move to Trash", role: .destructive) { if canStartWork { export.delete(record) } }
+            Button("Move to Trash", role: .destructive) { if canStartWork && !viewerIsReading(record) { export.delete(record) } }
             Button("Cancel", role: .cancel) {}
         } message: { record in
             Text("Move “\(record.fileName)” and its export folder to Trash and remove it from export history? The variant’s downloads and prepared models are kept. If the file is already missing, only its history entry and any remaining export folder are removed.")
         }
     }
+
+    private func viewerIsReading(_ record: EarthProjectExportRecord) -> Bool
+    { viewer.isLoading && viewer.request?.projectID == export.projectID && viewer.request?.exportID == record.id }
 }

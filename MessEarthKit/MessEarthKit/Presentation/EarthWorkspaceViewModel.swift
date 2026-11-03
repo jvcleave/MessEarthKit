@@ -111,7 +111,11 @@ final class EarthWorkspaceViewModel
     var canResolveAddress: Bool { !isLoading && !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var canDownload: Bool { !isLoading && !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !latitude.isEmpty && !longitude.isEmpty }
     var canSaveCapture: Bool { !isLoading && hasPreview && (preparedModels.collection != nil ? preparedModels.selectedCount > 0 && (modelExport.mode == .separate || modelExport.canExportCombined) : (collection == nil || selectedSectionCount > 0)) }
-    var saveButtonTitle: String { preparedModels.collection != nil && modelExport.mode == .combinedGLB ? "Save GLB…" : "Save Models…" }
+    var saveButtonTitle: String
+    {
+        guard preparedModels.collection != nil, let format = modelExport.mode.format else { return "Save Models…" }
+        return "Save \(format.fileExtension.uppercased())…"
+    }
 
     func setAddress(_ value: String)
     {
@@ -247,7 +251,19 @@ final class EarthWorkspaceViewModel
     {
         guard !isLoading else { return }
         modelExport.setMode(mode)
-        if mode == .combinedGLB { checkCombinedExport() }
+        if mode.format != nil { checkCombinedExport() }
+    }
+
+    func setExportOptimization(_ settings: EarthExportOptimizationSettings)
+    {
+        guard !isLoading else { return }
+        modelExport.setOptimization(settings)
+    }
+
+    func setExportOption(_ field: EarthProjectExportField, included: Bool)
+    {
+        guard !isLoading else { return }
+        modelExport.setOption(field, included: included)
     }
 
     func checkCombinedExport()
@@ -262,21 +278,24 @@ final class EarthWorkspaceViewModel
         guard canSaveCapture, let capture else { return }
         let prepared = preparedModels.collection
         let modelSelection = preparedModels.selection
-        let combinesModels = prepared != nil && modelExport.mode == .combinedGLB
+        let format = modelExport.mode.format
+        let combinesModels = prepared != nil && format != nil
+        let formatTitle = format?.rawValue ?? "Models"
+        let suffix = format?.fileExtension ?? ""
         let selected: EarthCaptureCollection?
         do { selected = prepared == nil ? try collection?.selecting(selectedSectionIDs) : nil }
         catch { errorMessage = error.localizedDescription; return }
         let panel = NSSavePanel()
-        panel.title = combinesModels ? "Save Combined GLB" : "Save Models Folder"
-        panel.nameFieldStringValue = combinesModels ? "Earth Models.glb" : "Earth Models"
-        if combinesModels { panel.allowedContentTypes = [UTType(filenameExtension: "glb") ?? .data] }
+        panel.title = combinesModels ? "Save \(formatTitle)" : "Save Models Folder"
+        panel.nameFieldStringValue = combinesModels ? "Earth Models.\(suffix)" : "Earth Models"
+        if combinesModels { panel.allowedContentTypes = [UTType(filenameExtension: suffix) ?? .data] }
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let job = UUID()
         activeJobID = job
         isImporting = true
         errorMessage = nil
-        status = combinesModels ? "Saving combined GLB…" : "Saving capture…"
+        status = combinesModels ? "Saving \(formatTitle)…" : "Saving capture…"
         importTask = Task
         { [weak self, captureStore, appFiles] in
             do
@@ -292,7 +311,7 @@ final class EarthWorkspaceViewModel
                         Task
                         { @MainActor [weak self] in
                             guard let self, activeJobID == job, isImporting else { return }
-                            status = "Writing combined GLB: \(progress.completedModels.formatted()) / \(progress.totalModels.formatted()) models"
+                            status = "Writing \(formatTitle): \(progress.completedModels.formatted()) / \(progress.totalModels.formatted()) models"
                         }
                     }
                 }
@@ -301,7 +320,7 @@ final class EarthWorkspaceViewModel
                 else { root = try await captureStore.save(capture: capture, directoryURL: destination) }
                 self?.savedRootURL = root
                 self?.hasSavedCapture = true
-                self?.status = prepared?.state == .partial ? "Partial models saved" : (combinesModels ? "Combined GLB saved" : (capture.incompleteReason == nil ? "Capture saved" : "Partial capture saved"))
+                self?.status = prepared?.state == .partial ? "Partial models saved" : (combinesModels ? "\(formatTitle) saved" : (capture.incompleteReason == nil ? "Capture saved" : "Partial capture saved"))
             }
             catch is CancellationError { self?.status = "Save cancelled" }
             catch

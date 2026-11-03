@@ -16,7 +16,8 @@ let package = Package(
             name: "EarthDracoBridge",
             dependencies: ["GLTFKit2", "Draco"]
         ),
-        .target(name: "MessEarthKit", dependencies: ["EarthDracoBridge", "GLTFKit2"], linkerSettings: [.linkedLibrary("sqlite3")]),
+        .target(name: "EarthMeshOptimizer", exclude: ["vendor/LICENSE.md"], publicHeadersPath: "include"),
+        .target(name: "MessEarthKit", dependencies: ["EarthDracoBridge", "GLTFKit2", "EarthMeshOptimizer"], resources: [.copy("Resources/ThirdPartyNotices")], linkerSettings: [.linkedLibrary("sqlite3")]),
         .testTarget(name: "MessEarthKitTests", dependencies: ["MessEarthKit"], resources: [.copy("Fixtures")]),
         // Compile actual app storage/workflow/renderer sources for headless verification,
         // without exposing app types from the public SDK or launching its UI.

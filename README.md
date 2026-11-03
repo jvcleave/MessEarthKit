@@ -1,7 +1,7 @@
 # MessEarthKit
 
 Capture geographic 3D models from Google Photorealistic 3D Tiles, preview them on
-your Mac, and export self-contained GLB files for other apps.
+your Mac, and export self-contained GLB or USDZ files for other apps.
 
 ## Requirements
 
@@ -48,7 +48,13 @@ MessEarthKit organise your captures.
 3. Open the project to work with its map, locations and capture variants.
 
 Edits save automatically. Projects are stored under
-`~/Documents/MessEarthKit/projects/`.
+`~/Documents/MessEarthKit/projects/` by default.
+
+To choose another location, open **Settings → Storage → Move Storage…** and
+select an empty folder. The app moves your existing projects, captures, prepared
+models, exports, settings and request history, then opens them at the new location.
+Finish active work and save pending edits before moving. The selected folder is
+remembered across launches. See [storage details](docs/APP_STORAGE.md#moving-storage).
 
 ## Capture an area
 
@@ -114,38 +120,69 @@ Preview choices do not change downloaded files or export options.
 ## Export
 
 1. Return to the project's variant cards and find the variant you want to export.
-2. In its **Export** section, choose the included contents with the checkboxes.
+2. In its **Export** section, select **GLB**, **Optimized GLB**, **USDZ** or **Optimized USDZ**,
+   then choose the included contents with the checkboxes.
    Export appears after the download is complete and becomes available when the
    queued preparation finishes or is cancelled.
-3. Choose **Export GLB**. Preparation runs offline first if needed.
-4. Choose **Show Export in Finder** beside the completed export.
+3. Choose the matching **Export** button. Preparation runs offline first if needed.
+4. Choose **Show in Finder** beside the completed export.
 
-The toggles select normals, vertex colors, UV coordinates, materials and texture
+Choose **VIEW** beside a completed export to open it in a separate model viewer.
+Use its **Export** picker to switch among that variant's files, including regular
+and optimized GLB/USDZ. Drag to orbit, Shift-drag or right-drag to pan, scroll to zoom,
+and choose **Frame All** to fit the model. The viewer shows format, file size,
+vertices and triangles from the saved file. It does not need the source capture
+or preparation folders. Closing the window cancels loading and releases its model.
+
+The toggles select vertex colors, UV coordinates, materials and texture
 images; all start enabled. Positions and triangle indices are always included.
 Enabling textures enables UVs and materials; disabling either UVs or materials
 also disables textures. Placement, capture identity and attribution are always
-retained.
+retained. New combined exports omit normals. The exported-model viewer generates
+flat normals from the delivered triangles when loading them.
 
 Filenames include the selected contents. For example,
-`Chicago_Standard_geom_norm_vcol_uv_mat_tex.glb` contains geometry (`geom`,
-positions and triangle indices), normals (`norm`), vertex colors (`vcol`), UVs,
+`Chicago_41.88_-87.63_40000m2_Standard_geom_vcol_uv_mat_tex.glb` contains geometry (`geom`,
+positions and triangle indices), vertex colors (`vcol`), UVs,
 materials (`mat`) and texture images (`tex`). Omitted channels have no tag;
 geometry-only exports end in `_geom.glb`.
 
-Exports are saved in the project's `output/<export UUID>/` folder. **Export
-Again** creates another file and keeps earlier exports in the history. Export
+Exports are saved in the project's `output/<export UUID>/` folder. Exporting
+again creates another file and keeps earlier exports in the history. Export
 does not require the whole capture to fit in Preview.
 
-Choose **Rename… → Auto** to fill a city/latitude/longitude filename from that
-export's saved capture location, including exports with older or custom names.
+Automatic location names show the city, latitude/longitude rounded to two decimal
+places and capture area (width × height) in square meters, for example
+`Chicago (41.88, -87.63), 40,000 m²`. Automatic filenames use `40000m2` for that
+area. Capture data and exported metadata retain full coordinate precision.
+
+Choose **Rename… → Auto** to fill a city/latitude/longitude/area filename from that
+export's saved capture location and dimensions, including exports with older or custom names.
 You can edit the suggestion before choosing **Rename**. The optional information
 companion moves with the GLB; its contents and captured identity stay unchanged.
 
-New app exports also include an optional `.glb.info.json` companion with model
+New GLB app exports also include an optional `.glb.info.json` companion with model
 statistics, saved location name, full-precision latitude/longitude and ellipsoid
 height, capture dimensions/detail, attribution and a small PNG thumbnail. Keep it
 beside the GLB for consumers that support it. The GLB works independently. See the
 [companion format](docs/GLB_INFO.md) for SDK export and reader details.
+
+Optimized GLB uses the same mesh reduction as optimized USDZ: a target triangle
+fraction and maximum geometry error in meters. It writes ordinary GLB, retaining
+selected channels, original texture bytes and materials. Existing GLB readers
+need no meshoptimizer decoder. The file and optional companion record the
+requested settings and achieved counts/error. Original GLB export remains available.
+
+USDZ keeps the selected detail and embeds capture identity, geographic origin,
+attribution and export settings. Optimized USDZ adds a triangle target, a maximum
+geometry error in meters and an optional texture edge limit. The default keeps
+original texture dimensions. Protected mesh borders and appearance can limit
+reduction; smaller files are not guaranteed. Omitted output channels do not
+constrain optimization. Nearest texture filtering requires
+GLB because standard USD materials cannot express it faithfully. The same applies
+to textured meshes with varying vertex colors; untextured colors and constant
+texture tint are supported. See the
+[USDZ contract](docs/TECHNICAL_REFERENCE.md#usdz-output-and-optimization).
 
 Export choices leave downloaded and prepared sources intact. Omitting images
 from an export does not reduce the Google tiles already downloaded.
@@ -155,6 +192,7 @@ from an export does not reduce the Google tiles already downloaded.
 | Output | What the consuming app needs |
 | --- | --- |
 | **Exported `.glb`** | A glTF 2.0 importer and renderer supporting static triangle meshes, node transforms and the included material, image and vertex attributes. No EarthKit dependency is required. |
+| **Exported `.usdz`** | A USD consumer supporting binary USD geometry, USD Preview Surface materials, PNG/JPEG textures and connected vertex primvars. The file contains its dependencies. No EarthKit or meshoptimizer decoder is required. |
 | **Completed capture folder** | MessEarthKit's `EarthCaptureImporter` reads `tileset.json`, referenced GLBs and placement transforms. Another compatible 3D Tiles reader can also be used. Keep referenced files together; source GLBs may require Draco decoding. |
 | **Ready prepared collection** | MessEarthKit's `EarthPreparedCollection` opens the catalog and loads aligned model parts. A compatible reader can also use its local `tileset.json`. Preserve the shared placement when combining parts. |
 

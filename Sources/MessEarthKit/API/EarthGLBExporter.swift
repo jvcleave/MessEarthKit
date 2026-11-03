@@ -12,6 +12,7 @@ public struct EarthGLBExportPlan: Sendable
     public let outputByteCount: Int?
     public let coversEntireSource: Bool
     public let options: EarthGLBExportOptions
+    public let optimization: EarthMeshOptimizationResult?
     public var includesTextures: Bool { options.includeTextures }
     public let issues: [String]
     public var canExport: Bool { issues.isEmpty && json != nil }
@@ -58,6 +59,10 @@ struct EarthGLBExportModel: Sendable
 {
     let id: Int
     let fingerprint: String
+    let outputFingerprint: String?
+
+    init(id: Int, fingerprint: String, outputFingerprint: String? = nil)
+    { self.id = id; self.fingerprint = fingerprint; self.outputFingerprint = outputFingerprint }
 }
 
 public struct EarthGLBExportProgress: Sendable
@@ -90,8 +95,9 @@ public enum EarthGLBExportError: Error, Equatable, LocalizedError, Sendable
 }
 
 /// Keeps one bounded prepared model, a bounded JSON document and small I/O
-/// buffers in memory. Meshes remain independent; there is no welding or texture
-/// resampling. The selected source files are fingerprinted before output.
+/// buffers in memory. Meshes remain independent; optional geometry reduction
+/// preserves selected attributes. Texture bytes remain unchanged. Source and
+/// optimized geometry are fingerprinted across preflight and publication.
 public actor EarthGLBExporter
 {
     private var isWorking = false
@@ -106,24 +112,7 @@ public actor EarthGLBExporter
     {
         do
         {
-            let input = try FileHandle(forReadingFrom: fileURL)
-            defer { try? input.close() }
-            let header = try input.read(upToCount: 20) ?? Data()
-            guard header.count == 20 else { throw EarthImportError.invalidContent("The exported GLB header is incomplete.") }
-            let words = header.withUnsafeBytes
-            { bytes in (0 ..< 5).map { UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self)) } }
-            let fileLength = try input.seekToEnd()
-            let jsonLength = Int(words[3])
-            guard fileLength >= 20, words[0] == 0x46546C67, words[1] == 2, UInt64(words[2]) == fileLength,
-                  words[4] == 0x4E4F534A, jsonLength > 0, jsonLength <= 16 * 1024 * 1024,
-                  jsonLength.isMultiple(of: 4), UInt64(jsonLength) <= fileLength - 20
-            else { throw EarthImportError.invalidContent("The exported GLB header or JSON length is invalid.") }
-            try input.seek(toOffset: 20)
-            let json = try input.read(upToCount: jsonLength) ?? Data()
-            guard json.count == jsonLength,
-                  let document = try JSONSerialization.jsonObject(with: json) as? [String: Any],
-                  (document["asset"] as? [String: Any])?["version"] as? String == "2.0"
-            else { throw EarthImportError.invalidContent("The exported GLB JSON is invalid.") }
+            let document = try Self.exportedDocument(fileURL)
             guard let rawExtras = document["extras"] else { return nil }
             guard let extras = rawExtras as? [String: Any]
             else { throw EarthImportError.invalidContent("The exported GLB metadata is invalid.") }
@@ -138,6 +127,37 @@ public actor EarthGLBExporter
         catch { throw EarthImportError.invalidContent("The exported GLB choices could not be read.") }
     }
 
+    /// Reads recorded reduction settings/counts without decoding binary geometry.
+    /// Nil denotes an ordinary delivery. This is not full asset validation.
+    public func exportedOptimization(fileURL: URL) throws -> EarthMeshOptimizationResult?
+    {
+        let document = try Self.exportedDocument(fileURL)
+        return try EarthCombinedGLBMetadata.read(json: document, maximumEntries: 1000000)?.optimization
+    }
+
+    private static func exportedDocument(_ fileURL: URL) throws -> [String: Any]
+    {
+        let input = try FileHandle(forReadingFrom: fileURL)
+        defer { try? input.close() }
+        let header = try input.read(upToCount: 20) ?? Data()
+        guard header.count == 20 else { throw EarthImportError.invalidContent("The exported GLB header is incomplete.") }
+        let words = header.withUnsafeBytes
+        { bytes in (0 ..< 5).map { UInt32(littleEndian: bytes.loadUnaligned(fromByteOffset: $0 * 4, as: UInt32.self)) } }
+        let fileLength = try input.seekToEnd()
+        let jsonLength = Int(words[3])
+        guard fileLength >= 20, words[0] == 0x46546C67, words[1] == 2, UInt64(words[2]) == fileLength,
+              words[4] == 0x4E4F534A, jsonLength > 0, jsonLength <= 16 * 1024 * 1024,
+              jsonLength.isMultiple(of: 4), UInt64(jsonLength) <= fileLength - 20
+        else { throw EarthImportError.invalidContent("The exported GLB header or JSON length is invalid.") }
+        try input.seek(toOffset: 20)
+        let json = try input.read(upToCount: jsonLength) ?? Data()
+        guard json.count == jsonLength,
+              let document = try JSONSerialization.jsonObject(with: json) as? [String: Any],
+              (document["asset"] as? [String: Any])?["version"] as? String == "2.0"
+        else { throw EarthImportError.invalidContent("The exported GLB JSON is invalid.") }
+        return document
+    }
+
     /// Options select the exported vertex attributes, materials and images.
     /// Source model loading retains its original limits and data. Texture export
     /// requires UV coordinates and materials; inconsistent options fail explicitly.
@@ -146,6 +166,7 @@ public actor EarthGLBExporter
         selection: EarthModelSelection = .all(),
         destination: EarthPreparationProfile,
         options: EarthGLBExportOptions = .full,
+        optimization: EarthMeshOptimizationProfile? = nil,
         identity: EarthCaptureIdentity? = nil,
         progress: @escaping @Sendable (EarthGLBExportProgress) -> Void = { _ in }
     ) async throws -> EarthGLBExportPlan
@@ -166,12 +187,14 @@ public actor EarthGLBExporter
         let estimatedIssues = Self.requirementIssues(estimate, profile: destination)
         if !estimatedIssues.isEmpty
         {
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, issues: estimatedIssues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
+            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, optimization: nil, issues: estimatedIssues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
         }
         let builder = try EarthCombinedGLB(profile: destination, options: options, identity: identity)
         var models: [EarthGLBExportModel] = []
         var offset = 0
         var lastProgress = ContinuousClock.now
+        var sourceVertices = 0, sourceTriangles = 0
+        var maximumError: Float = 0
         do
         {
             while offset < snapshot.modelCount
@@ -185,8 +208,21 @@ public actor EarthGLBExporter
                     let capture = try await snapshot.importModel(id: model.id)
                     try autoreleasepool
                     {
-                        try builder.append(capture, modelID: model.id)
-                        models.append(EarthGLBExportModel(id: model.id, fingerprint: Self.fingerprint(capture)))
+                        sourceVertices = try EarthCaptureGeometryEstimate.sum(sourceVertices, capture.vertexCount)
+                        sourceTriangles = try EarthCaptureGeometryEstimate.sum(sourceTriangles, capture.triangleCount)
+                        let sourceFingerprint = Self.fingerprint(capture)
+                        if let optimization
+                        {
+                            let reduced = try EarthMeshOptimization.optimize(capture, options: options, profile: optimization)
+                            try builder.append(reduced.capture, modelID: model.id)
+                            maximumError = max(maximumError, reduced.error)
+                            models.append(EarthGLBExportModel(id: model.id, fingerprint: sourceFingerprint, outputFingerprint: Self.fingerprint(reduced.capture)))
+                        }
+                        else
+                        {
+                            try builder.append(capture, modelID: model.id)
+                            models.append(EarthGLBExportModel(id: model.id, fingerprint: sourceFingerprint))
+                        }
                     }
                     if models.count == 1 || models.count == count || lastProgress.duration(to: .now) >= .milliseconds(200)
                     {
@@ -197,18 +233,32 @@ public actor EarthGLBExporter
                 offset += page.count
             }
             guard models.count == count else { throw EarthGLBExportError.sourceChanged }
-            let json = try builder.finish(collection: snapshot, modelIDs: models.map(\.id), coversEntireSource: entire)
+            let result = optimization.map { EarthMeshOptimizationResult(profile: $0, sourceVertexCount: sourceVertices, sourceTriangleCount: sourceTriangles, vertexCount: builder.estimate.vertexCount, triangleCount: builder.estimate.indexCount / 3, maximumErrorMeters: maximumError) }
+            try result?.validate()
+            let json = try builder.finish(collection: snapshot, modelIDs: models.map(\.id), coversEntireSource: entire, optimization: result)
             let total = try EarthCaptureGeometryEstimate.sum(28, EarthCaptureGeometryEstimate.sum(json.count, builder.binaryByteCount))
             var issues = Self.requirementIssues(builder.estimate, profile: destination)
             if total > destination.maximumSourceBytesPerModel
             { issues.append("The file needs \(total.formatted()) bytes; this destination allows \(destination.maximumSourceBytesPerModel.formatted()).") }
             if total > Int(UInt32.max)
             { issues.append("The file exceeds GLB's 32-bit container length.") }
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: builder.estimate, outputByteCount: total, coversEntireSource: entire, options: options, issues: issues, collection: snapshot, json: issues.isEmpty ? json : nil, binaryByteCount: builder.binaryByteCount, models: models)
+            return EarthGLBExportPlan(
+                selectedModelCount: count,
+                estimate: builder.estimate,
+                outputByteCount: total,
+                coversEntireSource: entire,
+                options: options,
+                optimization: result,
+                issues: issues,
+                collection: snapshot,
+                json: issues.isEmpty ? json : nil,
+                binaryByteCount: builder.binaryByteCount,
+                models: models
+            )
         }
         catch let EarthGLBExportError.requirements(issues)
         {
-            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, issues: issues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
+            return EarthGLBExportPlan(selectedModelCount: count, estimate: estimate, outputByteCount: nil, coversEntireSource: entire, options: options, optimization: nil, issues: issues, collection: snapshot, json: nil, binaryByteCount: 0, models: [])
         }
     }
 
@@ -289,10 +339,23 @@ public actor EarthGLBExporter
                 try Task.checkCancellation()
                 let capture = try await current.importModel(id: model.id)
                 guard Self.fingerprint(capture) == model.fingerprint else { throw EarthGLBExportError.sourceChanged }
-                try autoreleasepool { try EarthCombinedGLB.writeBinary(capture, options: plan.options, to: output, observe: observe) }
+                let delivered: EarthCapture
+                if let optimization = plan.optimization
+                {
+                    delivered = try EarthMeshOptimization.optimize(capture, options: plan.options, profile: optimization.profile).capture
+                    guard Self.fingerprint(delivered) == model.outputFingerprint else { throw EarthGLBExportError.sourceChanged }
+                }
+                else { delivered = capture }
+                try autoreleasepool { try EarthCombinedGLB.writeBinary(delivered, options: plan.options, to: output, observe: observe) }
                 if let consumer = activePreview
                 {
-                    do { try await consumer.consume(capture) }
+                    do
+                    {
+                        let capture = plan.optimization != nil && !plan.options.includeNormals
+                            ? try EarthMeshOptimization.previewCapture(delivered, maximumVertices: plan.collection.profile.maximumIndicesPerModel)
+                            : delivered
+                        try await consumer.consume(capture)
+                    }
                     catch is CancellationError { throw CancellationError() }
                     catch { activePreview = nil; infoWarning = "The GLB was exported, but its thumbnail could not be generated." }
                 }
@@ -331,6 +394,7 @@ public actor EarthGLBExporter
                     sha256: digest.finalize().map { String(format: "%02x", $0) }.joined(),
                     geometry: try plan.informationGeometry(),
                     options: plan.options,
+                    optimization: plan.optimization,
                     attributions: attributions,
                     geographicOrigin: plan.collection.geographicOrigin,
                     captureIdentity: try EarthCaptureIdentity.readMetadata(json: document),
@@ -356,10 +420,11 @@ public actor EarthGLBExporter
         catch let error as EarthGLBExportError { throw error }
         catch let error as EarthImportError { throw error }
         catch let error as EarthPreparationError { throw error }
+        catch let error as EarthMeshOptimizationError { throw error }
         catch { throw EarthGLBExportError.storage }
     }
 
-    private static func inspect(collection: EarthPreparedCollection, selection: EarthModelSelection, includeTextures: Bool) throws -> (EarthPreparedCollection, Int, EarthCaptureGeometryEstimate)
+    static func inspect(collection: EarthPreparedCollection, selection: EarthModelSelection, includeTextures: Bool) throws -> (EarthPreparedCollection, Int, EarthCaptureGeometryEstimate)
     {
         let index = try EarthPreparationIndex(directoryURL: collection.directoryURL)
         let snapshot = try index.snapshot()
@@ -379,7 +444,7 @@ public actor EarthGLBExporter
         return (snapshot, count, estimate)
     }
 
-    private static func requirementIssues(_ estimate: EarthCaptureGeometryEstimate, profile: EarthPreparationProfile) -> [String]
+    static func requirementIssues(_ estimate: EarthCaptureGeometryEstimate, profile: EarthPreparationProfile) -> [String]
     {
         var issues: [String] = []
         if estimate.vertexCount > profile.maximumVerticesPerModel { issues.append("The selection needs \(estimate.vertexCount.formatted()) vertices; the destination allows \(profile.maximumVerticesPerModel.formatted()).") }
@@ -389,7 +454,7 @@ public actor EarthGLBExporter
         return issues
     }
 
-    private static func fingerprint(_ capture: EarthCapture) -> String
+    static func fingerprint(_ capture: EarthCapture) -> String
     {
         var hash = SHA256()
         for file in capture.sourceFiles

@@ -44,6 +44,14 @@
       "revision": "As embedded in GLTFKit2 revision e69e354c4f31ea07b7816b8cbe2ddb28e897d073",
       "source": "Sources/GLTFKit2-0.5.15.tar.gz",
       "selection": "Unmodified GLTFKit2/deps/cgltf directory, including its license."
+    },
+    {
+      "name": "meshoptimizer",
+      "version": "1.3",
+      "repository": "https://github.com/zeux/meshoptimizer",
+      "revision": "9e1f07b159d3cb777f1c67ed31fc11fd117986f4",
+      "source": "Sources/meshoptimizer-1.3.tar.gz",
+      "selection": "Unmodified src/meshoptimizer.h, allocator, indexgenerator, vcacheoptimizer, vfetchoptimizer and simplifier source compiled by EarthMeshOptimizer. No runtime mesh compression codec. MIT license included beside sources and under Licenses."
     }
   ],
   "artifactChanges": "Only macOS AvailableLibraries entries/slices are retained. Frameworks, static library, headers, module maps and macOS debug symbols are byte-for-byte upstream; only outer XCFramework Info.plist files are reduced.",

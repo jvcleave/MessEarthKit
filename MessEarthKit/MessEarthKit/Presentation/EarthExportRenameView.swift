@@ -20,7 +20,7 @@ struct EarthExportRenameView: View
                     .help("Use the city and coordinates of this export's capture.")
                 if viewModel.isResolving { ProgressView().controlSize(.small) }
             }
-            Text("Rename the exported file and its optional information companion. The .glb extension is kept.")
+            Text("Rename the exported file and its optional information companion. The .\(viewModel.record.format.fileExtension) extension is kept.")
                 .font(.caption).foregroundStyle(.secondary)
             if let error = viewModel.errorMessage { EarthErrorMessage(error) }
             HStack

@@ -12,6 +12,7 @@ struct EarthProjectExportRecord: Codable, Equatable, Identifiable, Sendable
     let includeTextures: Bool
     var fileName: String
     let createdAt: Date
+    var format: EarthExportFormat { fileName.hasSuffix(".glb") ? .glb : .usdz }
     var reference: String { "output/\(id.uuidString)/\(fileName)" }
 
     func validate() throws
@@ -19,7 +20,7 @@ struct EarthProjectExportRecord: Codable, Equatable, Identifiable, Sendable
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .-_"))
         guard preparation.captureID == source.id, detail.errorMeters == source.request.maximumGeometricErrorMeters,
               createdAt.timeIntervalSince1970.isFinite, !fileName.isEmpty, fileName.utf8.count <= 255,
-              fileName.hasSuffix(".glb"), fileName.unicodeScalars.allSatisfy({ allowed.contains($0) })
+              fileName.hasSuffix(".glb") || fileName.hasSuffix(".usdz"), fileName.unicodeScalars.allSatisfy({ allowed.contains($0) })
         else { throw EarthAppFilesError.invalidMetadata }
         _ = try EarthCaptureIdentity(locationName: locationName, request: source.request, detailName: detail.rawValue)
     }
@@ -27,9 +28,10 @@ struct EarthProjectExportRecord: Codable, Equatable, Identifiable, Sendable
     func renamed(to name: String) throws -> Self
     {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stem = name.lowercased().hasSuffix(".glb") ? String(name.dropLast(4)) : name
+        let suffix = "." + format.fileExtension
+        let stem = name.lowercased().hasSuffix(suffix) ? String(name.dropLast(suffix.count)) : name
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: " .-_"))
-        let fileName = stem + ".glb"
+        let fileName = stem + suffix
         guard !stem.trimmingCharacters(in: CharacterSet(charactersIn: " .")).isEmpty,
               fileName.utf8.count <= 245, fileName.unicodeScalars.allSatisfy({ allowed.contains($0) })
         else { throw EarthAppFilesError.invalidExportName }
@@ -46,7 +48,22 @@ struct EarthProjectExportItem: Identifiable, Sendable
     let fileIsAvailable: Bool
     let exportedOptions: EarthGLBExportOptions?
     let contentsError: String?
+    var usdzMetadata: EarthUSDZExportMetadata? = nil
+    var glbOptimization: EarthMeshOptimizationResult? = nil
+    var byteCount: Int? = nil
     var id: UUID { record.id }
+
+    var deliverySummary: String
+    {
+        let size = byteCount.map { " - " + ByteCountFormatter.string(fromByteCount: Int64($0), countStyle: .file) } ?? ""
+        if let info = glbOptimization
+        {
+            return "\(EarthExportFormat.optimizedGLB.rawValue)\(size) - \(info.sourceTriangleCount.formatted()) to \(info.triangleCount.formatted()) triangles - error \(info.maximumErrorMeters.formatted()) m"
+        }
+        guard let info = usdzMetadata else { return record.format.rawValue + size }
+        let format = info.optimization == nil ? "USDZ" : "Optimized USDZ"
+        return "\(format)\(size) - \(info.sourceTriangleCount.formatted()) to \(info.triangleCount.formatted()) triangles - error \(info.maximumErrorMeters.formatted()) m"
+    }
 
     var contentsSummary: String
     {
@@ -57,7 +74,7 @@ struct EarthProjectExportItem: Identifiable, Sendable
         if options.includeTextureCoordinates { contents.append("UV coordinates") }
         if options.includeMaterials { contents.append("Materials") }
         if options.includeTextures { contents.append("Textures") }
-        return contents.joined(separator: " · ")
+        return contents.joined(separator: " - ")
     }
 }
 

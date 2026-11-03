@@ -53,6 +53,10 @@ public actor EarthRequestUsageStore
         catch { database = nil; return .unavailable(at: date) }
     }
 
+    /// Release the connection before the host moves or replaces its authorized
+    /// storage. Stop sending events/refreshes first. A later operation reopens it.
+    public func close() { database = nil }
+
     private func connection() throws -> EarthUsageDatabase
     {
         if database == nil { database = try EarthUsageDatabase(fileURL: fileURL, createdAt: now()) }

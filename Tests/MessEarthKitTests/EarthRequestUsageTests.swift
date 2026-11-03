@@ -24,6 +24,7 @@ import Testing
     #expect(current.metadataRequests == 1 && current.tileRequests == 1)
     #expect(current.succeededRequests == 1 && current.failedRequests == 1 && current.pendingRequests == 1)
     #expect(current.trackingStartedAt == now && current.lastClearedAt == nil)
+    await store.close()
 
     let later = now.addingTimeInterval(0.02)
     let reopened = EarthRequestUsageStore(fileURL: file, now: { later })

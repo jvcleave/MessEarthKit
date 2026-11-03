@@ -122,7 +122,7 @@ final class EarthProjectViewModel: Identifiable
         if phase != .idle { return phase.title }
         if hasActiveDownloads { return "Downloads in progress" }
         if jobError != nil { return jobFailureStatus }
-        if export.isLoading { return "Exporting GLB" }
+        if export.isLoading { return "Exporting model" }
         if preview.isLoading { return "Loading preview" }
         if preview.errorMessage != nil { return "Preview unavailable" }
         return savedStatus
@@ -244,6 +244,7 @@ final class EarthProjectViewModel: Identifiable
     func cancelMapAreaEdit() { mapEdit.cancel() }
 
     var isBusy: Bool { phase != .idle || preview.isLoading || export.isBusy || mapEdit.isEditing }
+    var canMoveStorage: Bool { !isBusy && !isSaving && !hasPendingEdits && persistenceError == nil && !hasActiveDownloads && !export.isLoadingHistory }
     var canAddVariant: Bool { confirmation != nil && areaAdjustment == nil && !isBusy && canEditCurrentLocation }
     var canApplyAreaAdjustment: Bool { confirmation != nil && areaAdjustment != nil && !isBusy }
     var hasAPIKey: Bool { !settings.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }

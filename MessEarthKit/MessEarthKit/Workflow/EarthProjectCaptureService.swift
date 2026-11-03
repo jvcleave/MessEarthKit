@@ -47,6 +47,7 @@ actor EarthProjectCaptureService
     private let lookup: Lookup
     private let acquire: Acquire
     private let prepare: Prepare
+    private let captureStore = EarthCaptureStore()
 
     init(id: UUID, files: EarthAppFiles, store: EarthProjectStore, lookup: @escaping Lookup, acquire: @escaping Acquire, prepare: @escaping Prepare)
     {
@@ -106,6 +107,12 @@ actor EarthProjectCaptureService
             try await files.validateArtifactDirectory(url, projectID: id, kind: .prepared)
             let collection = try await EarthPreparedCollection.open(directoryURL: url)
             guard collection.profile == preparation.profile else { throw EarthProjectStoreError.sourceMismatch }
+            guard let location = record.locations.first(where: { $0.id == variant.locationID })
+            else { throw EarthProjectStoreError.captureNotFound }
+            let identity = try EarthCaptureIdentity(locationName: location.title, request: variant.capture.request, detailName: variant.title)
+            let access = try await files.accessForReading(url)
+            defer { withExtendedLifetime(access) {} }
+            try await captureStore.recordIdentity(identity, collection: collection)
         }
         else
         {
@@ -121,13 +128,24 @@ actor EarthProjectCaptureService
         try await requireVariant(archive, variantID: variantID)
         let profile = try EarthPreparationProfile(name: "Project preview")
         let current = try await store.openVariant(id: id, variantID: variantID)
-        if let ready = current.prepared, ready.state == .ready, ready.profile == profile { return ready }
+        if let ready = current.prepared, ready.state == .ready, ready.profile == profile
+        {
+            let identity = try EarthCaptureIdentity(locationName: current.location.title, request: current.variant.capture.request, detailName: current.variant.title)
+            let access = try await files.accessForReading(ready.directoryURL)
+            defer { withExtendedLifetime(access) {} }
+            try await captureStore.recordIdentity(identity, collection: ready)
+            return ready
+        }
         let result = try await prepare(archive, profile, progress)
         try Task.checkCancellation()
         try await requireVariant(archive, variantID: variantID)
         guard let preparationID = UUID(uuidString: result.directoryURL.lastPathComponent),
               let captureID = UUID(uuidString: archive.directoryURL.lastPathComponent)
         else { throw EarthAppFilesError.invalidLocation }
+        let identity = try EarthCaptureIdentity(locationName: current.location.title, request: current.variant.capture.request, detailName: current.variant.title)
+        let access = try await files.accessForReading(result.directoryURL)
+        defer { withExtendedLifetime(access) {} }
+        try await captureStore.recordIdentity(identity, collection: result)
         _ = try await store.recordPreparation(id: id, variantID: variantID, preparation: .init(id: preparationID, captureID: captureID, profile: result.profile))
         return result
     }

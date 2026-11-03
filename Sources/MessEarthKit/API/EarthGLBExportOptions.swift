@@ -1,6 +1,6 @@
 /// Output-only choices. Positions, triangle indices, placement and attribution
 /// are always retained; source and prepared model data are never modified.
-public struct EarthGLBExportOptions: Codable, Equatable, Sendable
+public struct EarthExportOptions: Codable, Equatable, Sendable
 {
     public var includeNormals: Bool
     public var includeVertexColors: Bool
@@ -42,3 +42,6 @@ public struct EarthGLBExportOptions: Codable, Equatable, Sendable
     var vertexByteStride: Int
     { 12 + (includeNormals ? 12 : 0) + (includeTextureCoordinates ? 8 : 0) + (includeVertexColors ? 16 : 0) }
 }
+
+/// Existing GLB clients use the same output-channel value as USDZ clients.
+public typealias EarthGLBExportOptions = EarthExportOptions

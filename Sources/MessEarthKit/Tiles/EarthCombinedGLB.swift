@@ -13,6 +13,7 @@ struct EarthCombinedGLBMetadata: Codable
     let preparationComplete: Bool
     let preparationIssue: String?
     let attributions: [String]
+    let optimization: EarthMeshOptimizationResult?
 
     static func read(json: [String: Any], maximumEntries: Int = 4096) throws -> Self?
     {
@@ -33,6 +34,7 @@ struct EarthCombinedGLBMetadata: Codable
                   metadata.preparationComplete || (!metadata.coversEntireSource && metadata.preparationIssue?.isEmpty == false),
                   (metadata.preparationIssue?.count ?? 0) <= 512
             else { throw EarthImportError.invalidContent("Invalid combined-asset metadata.") }
+            try metadata.optimization?.validate()
             return metadata
         }
         catch { throw EarthImportError.invalidContent("Invalid combined-asset metadata.") }
@@ -158,7 +160,7 @@ final class EarthCombinedGLB
         omittedDegenerateTriangleCount = try EarthCaptureGeometryEstimate.sum(omittedDegenerateTriangleCount, capture.omittedDegenerateTriangleCount)
     }
 
-    func finish(collection: EarthPreparedCollection, modelIDs: [Int], coversEntireSource: Bool) throws -> Data
+    func finish(collection: EarthPreparedCollection, modelIDs: [Int], coversEntireSource: Bool, optimization: EarthMeshOptimizationResult? = nil) throws -> Data
     {
         // Include the shared root in the destination's node budget.
         guard nodes.count < profile.maximumNodesPerPayload else { throw EarthGLBExportError.requirements(["The combined scene exceeds the destination's node budget."]) }
@@ -175,7 +177,8 @@ final class EarthCombinedGLB
             coversEntireSource: coversEntireSource,
             preparationComplete: collection.state == .ready,
             preparationIssue: collection.state == .ready ? nil : String((collection.interruptionReason ?? "Model preparation is incomplete.").prefix(512)),
-            attributions: attributions.sorted()
+            attributions: attributions.sorted(),
+            optimization: optimization
         )
         var json: [String: Any] = [
             "asset": ["version": "2.0", "generator": "MessEarthKit combined export", "copyright": attributions.sorted().joined(separator: "; ")],

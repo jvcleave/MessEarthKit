@@ -22,7 +22,7 @@ enum EarthProjectExportError: Error, LocalizedError, Sendable
     {
         switch self
         {
-            case let .historyNotSaved(_, reason): "The GLB was saved, but its export history could not be recorded. The file is retained. \(reason)"
+            case let .historyNotSaved(_, reason): "The export was saved, but its export history could not be recorded. The file is retained. \(reason)"
         }
     }
 }
@@ -30,13 +30,21 @@ enum EarthProjectExportError: Error, LocalizedError, Sendable
 /// Explicit variant identity and access leases survive navigation and selection.
 actor EarthProjectExportService
 {
-    private let projectID: UUID
+    nonisolated let projectID: UUID
     private let files: EarthAppFiles
     private let store: EarthProjectStore
     private let history: EarthProjectExportHistoryStore
     private let prepare: EarthProjectCaptureService.Prepare
     private let cityLookup: EarthProjectStore.CityLookup
+    private enum DeliveryPlan
+    {
+        case glb(EarthGLBExportPlan)
+        case usdz(EarthUSDZExportPlan)
+    }
+
     private let exporter = EarthGLBExporter()
+    private let usdzExporter = EarthUSDZExporter()
+    private let captureStore = EarthCaptureStore()
     private var isWorking = false
 
     init(projectID: UUID, files: EarthAppFiles, store: EarthProjectStore, prepare: @escaping EarthProjectCaptureService.Prepare, cityLookup: @escaping EarthProjectStore.CityLookup = { try await EarthCityLookup().resolve(center: $0) })
@@ -51,7 +59,9 @@ actor EarthProjectExportService
 
     func export(
         variantID: UUID,
-        options: EarthGLBExportOptions,
+        options: EarthExportOptions,
+        format: EarthExportFormat = .glb,
+        optimization: EarthExportOptimizationSettings = .init(),
         progress: @escaping @Sendable (EarthProjectExportProgress) -> Void
     ) async throws -> EarthProjectExportResult
     {
@@ -85,8 +95,10 @@ actor EarthProjectExportService
         let preparedAccess = try await files.accessForReading(collection.directoryURL)
         defer { withExtendedLifetime(preparedAccess) {} }
         let identity = try EarthCaptureIdentity(locationName: source.location.title, request: source.variant.capture.request, detailName: source.variant.detail.rawValue)
+        let preparedIdentity = try EarthCaptureIdentity(locationName: source.location.title, request: source.variant.capture.request, detailName: source.variant.title)
+        try await captureStore.recordIdentity(preparedIdentity, collection: collection)
         let destination = try EarthPreparationProfile(
-            name: "Standalone GLB",
+            name: "Standalone delivery",
             maximumVerticesPerModel: Int(UInt32.max) / 3,
             maximumIndicesPerModel: Int(UInt32.max),
             maximumDecodedTextureBytesPerModel: Int.max,
@@ -95,36 +107,50 @@ actor EarthProjectExportService
             maximumNodesPerPayload: 1000000,
             appearancePolicy: collection.profile.appearancePolicy
         )
-        let plan = try await exporter.preflight(
-            collection: collection,
-            destination: destination,
-            options: options,
-            identity: identity,
-            progress: { progress(.exporting($0)) }
-        )
+        let plan: DeliveryPlan
+        switch format
+        {
+            case .glb, .optimizedGLB:
+                let profile = format == .optimizedGLB ? try optimization.meshProfile() : nil
+                let value = try await exporter.preflight(collection: collection, destination: destination, options: options, optimization: profile, identity: identity, progress: { progress(.exporting($0)) })
+                guard value.canExport else { throw EarthGLBExportError.requirements(value.issues) }
+                plan = .glb(value)
+            case .usdz, .optimizedUSDZ:
+                let profile = format == .optimizedUSDZ ? try optimization.profile() : nil
+                let value = try await usdzExporter.preflight(collection: collection, destination: destination, options: options, optimization: profile, identity: identity, progress: { progress(.exporting($0)) })
+                guard value.canExport else { throw EarthUSDZExportError.requirements(value.issues) }
+                plan = .usdz(value)
+        }
         try Task.checkCancellation()
         let current = try await store.record(id: projectID)
         guard current.captures.first(where: { $0.id == variantID }) == source.variant,
               current.locations.first(where: { $0.id == source.location.id })?.name == source.location.name
         else { throw EarthGLBExportError.sourceChanged }
-        guard plan.canExport else { throw EarthGLBExportError.requirements(plan.issues) }
-        let output = try await files.newGLBExportDestination(projectID: projectID, name: identity.locationName, detail: source.variant.detail, options: plan.options)
+        let name = source.location.name.exportName(request: source.variant.capture.request)
+        let output = try await files.newExportDestination(projectID: projectID, name: name, detail: source.variant.detail, options: options, format: format)
         let fileURL: URL
         var infoWarning: String?
         do
         {
             let access = try await files.accessForExport(output.fileURL)
             defer { withExtendedLifetime(access) {} }
-            var preview: EarthGLBExportPreview?
-            do
+            switch plan
             {
-                let renderer = try EarthGLBThumbnailRenderer(geometry: plan.informationGeometry(), options: plan.options)
-                preview = EarthGLBExportPreview(consume: { try await renderer.consume($0) }, finish: { try await renderer.finish() })
+                case let .glb(value):
+                    var preview: EarthGLBExportPreview?
+                    do
+                    {
+                        let renderer = try EarthGLBThumbnailRenderer(geometry: value.informationGeometry(), options: value.options)
+                        preview = EarthGLBExportPreview(consume: { try await renderer.consume($0) }, finish: { try await renderer.finish() })
+                    }
+                    catch { infoWarning = "The GLB information companion has no thumbnail because preview rendering is unavailable." }
+                    let delivery = try await exporter.exportWithInfo(plan: value, fileURL: output.fileURL, preview: preview, progress: { progress(.exporting($0)) })
+                    fileURL = delivery.fileURL
+                    infoWarning = delivery.infoWarning ?? infoWarning
+                case let .usdz(value):
+                    let delivery = try await usdzExporter.export(plan: value, fileURL: output.fileURL, progress: { progress(.exporting($0)) })
+                    fileURL = delivery.fileURL
             }
-            catch { infoWarning = "The GLB information companion has no thumbnail because preview rendering is unavailable." }
-            let delivery = try await exporter.exportWithInfo(plan: plan, fileURL: output.fileURL, preview: preview, progress: { progress(.exporting($0)) })
-            fileURL = delivery.fileURL
-            infoWarning = delivery.infoWarning ?? infoWarning
         }
         catch
         {
@@ -142,7 +168,7 @@ actor EarthProjectExportService
             fileName: fileURL.lastPathComponent,
             createdAt: Date()
         )
-        // Atomic GLB publication wins a simultaneous Cancel. Persist its history
+        // Atomic output publication wins a simultaneous Cancel. Persist its history
         // even if the caller is now cancelled; never delete a completed output.
         do { _ = try await history.append(record) }
         catch { throw EarthProjectExportError.historyNotSaved(record: record, reason: error.localizedDescription) }
@@ -155,9 +181,12 @@ actor EarthProjectExportService
         var items: [EarthProjectExportItem] = []
         for record in records
         {
-            let available = try await files.exportFileIsAvailable(projectID: projectID, record: record)
+            let byteCount = try await files.exportFileByteCount(projectID: projectID, record: record)
+            let available = byteCount != nil
             var options: EarthGLBExportOptions?
             var contentsError: String?
+            var usdzMetadata: EarthUSDZExportMetadata?
+            var glbOptimization: EarthMeshOptimizationResult?
             if available
             {
                 do
@@ -165,11 +194,20 @@ actor EarthProjectExportService
                     let url = try await files.exportFileURL(projectID: projectID, record: record)
                     let access = try await files.accessForReading(url)
                     defer { withExtendedLifetime(access) {} }
-                    options = try await exporter.exportedOptions(fileURL: url)
+                    if record.format.isGLB
+                    {
+                        options = try await exporter.exportedOptions(fileURL: url)
+                        glbOptimization = try await exporter.exportedOptimization(fileURL: url)
+                    }
+                    else
+                    {
+                        usdzMetadata = try await usdzExporter.metadata(fileURL: url)
+                        options = usdzMetadata?.options
+                    }
                 }
                 catch { contentsError = error.localizedDescription }
             }
-            items.append(.init(record: record, fileIsAvailable: available, exportedOptions: options, contentsError: contentsError))
+            items.append(.init(record: record, fileIsAvailable: available, exportedOptions: options, contentsError: contentsError, usdzMetadata: usdzMetadata, glbOptimization: glbOptimization, byteCount: byteCount))
         }
         return items.sorted
         {
@@ -193,12 +231,24 @@ actor EarthProjectExportService
         let url = try await files.exportFileURL(projectID: projectID, record: record)
         let access = try await files.accessForReading(url)
         defer { withExtendedLifetime(access) {} }
-        let options = try await exporter.exportedOptions(fileURL: url)
+        let options: EarthExportOptions?
+        let format: EarthExportFormat
+        if record.format.isGLB
+        {
+            options = try await exporter.exportedOptions(fileURL: url)
+            format = try await exporter.exportedOptimization(fileURL: url) == nil ? .glb : .optimizedGLB
+        }
+        else
+        {
+            let info = try await usdzExporter.metadata(fileURL: url)
+            options = info?.options
+            format = info?.optimization == nil ? .usdz : .optimizedUSDZ
+        }
         let center = record.source.request.center
         let name = EarthLocationName.automatic(city: try await cityLookup(center))
         try Task.checkCancellation()
         try name.validate()
-        return try await files.glbExportFileName(name: name.title(center: center), detail: record.detail, options: options)
+        return try await files.exportFileName(name: name.exportName(request: record.source.request), detail: record.detail, options: options, format: format)
     }
 
     func delete(_ record: EarthProjectExportRecord) async throws -> [EarthProjectExportItem]

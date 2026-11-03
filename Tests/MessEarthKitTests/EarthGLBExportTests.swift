@@ -337,7 +337,60 @@ private func combinedGLBPreflightRejectsDestinationExcessBeforeOutput(budget: Co
     #expect(!FileManager.default.fileExists(atPath: output.path))
 }
 
-@Test func combinedGLBRetainsInputsOnCancellationChangeAndExistingDestination() async throws
+@Test func optimizedGLBPublishesReducedStandardGeometryAndMatchingMetadata() async throws
+{
+    let parent = try preparationParent()
+    defer { try? FileManager.default.removeItem(at: parent) }
+    let (vertices, indices) = optimizationGrid(size: 16, vertical: true)
+    let (_, material) = try textureFixture(sampling: .linearClamp)
+    let source = try EarthDerivativeGLB.encode(vertices: vertices, indices: indices, material: material, name: "Textured grid", attributions: [], sourceID: "authored-grid")
+    let raw = try preparationArchive(parent: parent, count: 2, sourceOverride: source)
+    let destination = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
+    let collection = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: destination)
+    let first = try await collection.importModel(id: 1)
+    let fingerprint = EarthGLBExporter.fingerprint(first)
+    let exporter = EarthGLBExporter()
+    let options = EarthExportOptions(includeNormals: false, includeVertexColors: false)
+    let profile = try EarthMeshOptimizationProfile(triangleFraction: 0.5, maximumErrorMeters: 0.1)
+    let ordinary = try await exporter.preflight(collection: collection, destination: destination, options: options)
+    let plan = try await exporter.preflight(collection: collection, destination: destination, options: options, optimization: profile)
+    let optimization = try #require(plan.optimization)
+    #expect(plan.canExport && optimization.triangleCount <= optimization.sourceTriangleCount / 2)
+    #expect(try #require(plan.outputByteCount) < #require(ordinary.outputByteCount))
+    let image = try #require(material.baseColorTexture)
+    let thumbnail = try EarthGLBInfo.Thumbnail(width: image.width, height: image.height, pngData: image.encodedImage)
+    let expectedTriangles = optimization.triangleCount / 2
+    let preview = EarthGLBExportPreview(consume: { capture in
+        #expect(capture.triangleCount == expectedTriangles)
+        // Omitted normals are regenerated for the thumbnail, matching a later
+        // standalone import instead of the optimizer's unused constant values.
+        #expect(capture.meshes.allSatisfy { $0.vertices.allSatisfy { $0.normal.z > 0.99 } })
+    }, finish: { thumbnail })
+    let delivered = try await exporter.exportWithInfo(plan: plan, fileURL: parent.appendingPathComponent("optimized.glb"), preview: preview)
+    let restored = try await EarthCaptureImporter().importFile(fileURL: delivered.fileURL)
+    #expect(restored.triangleCount == optimization.triangleCount && restored.incompleteReason == nil)
+    #expect(restored.materials.allSatisfy { $0.baseColor == material.baseColor && $0.baseColorTexture?.encodedImage == image.encodedImage })
+    #expect(try await exporter.exportedOptimization(fileURL: delivered.fileURL) == optimization)
+    let info = try EarthGLBInfo.decode(Data(contentsOf: #require(delivered.infoURL)))
+    #expect(info.optimization == optimization && info.geometry.triangleCount == optimization.triangleCount && info.geometry.vertexCount == optimization.vertexCount)
+    #expect(delivered.infoWarning == nil && info.thumbnail?.data == thumbnail.data)
+    #expect(try EarthGLBExporter.fingerprint(await collection.importModel(id: 1)) == fingerprint)
+    let data = try Data(contentsOf: delivered.fileURL)
+    #expect(data.count == plan.outputByteCount)
+    let jsonLength = data.withUnsafeBytes { Int(UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self))) }
+    var json = try #require(JSONSerialization.jsonObject(with: data.subdata(in: 20 ..< 20 + jsonLength)) as? [String: Any])
+    #expect(json["extensionsRequired"] == nil)
+    #expect(!(json["extensionsUsed"] as? [String] ?? []).contains("EXT_meshopt_compression"))
+    var extras = try #require(json["extras"] as? [String: Any])
+    var metadata = try #require(extras["messEarthKitCombinedAsset"] as? [String: Any])
+    var invalid = try #require(metadata["optimization"] as? [String: Any])
+    invalid["triangleCount"] = 0
+    metadata["optimization"] = invalid; extras["messEarthKitCombinedAsset"] = metadata; json["extras"] = extras
+    #expect(throws: EarthImportError.self) { try EarthCombinedGLBMetadata.read(json: json) }
+}
+
+@Test(arguments: [false, true])
+func combinedGLBRetainsInputsOnCancellationChangeAndExistingDestination(optimized: Bool) async throws
 {
     let parent = try preparationParent()
     defer { try? FileManager.default.removeItem(at: parent) }
@@ -345,7 +398,8 @@ private func combinedGLBPreflightRejectsDestinationExcessBeforeOutput(budget: Co
     let profile = try EarthPreparationProfile(maximumPlacementsPerModel: 1)
     let catalog = try await EarthModelPreparer().prepare(archive: raw, directoryURL: parent.appendingPathComponent("prepared"), profile: profile)
     let exporter = EarthGLBExporter()
-    let plan = try await exporter.preflight(collection: catalog, destination: profile)
+    let optimization = optimized ? try EarthMeshOptimizationProfile() : nil
+    let plan = try await exporter.preflight(collection: catalog, destination: profile, optimization: optimization)
     #expect(plan.coversEntireSource)
     let output = parent.appendingPathComponent("cancelled.glb")
     let task = Task

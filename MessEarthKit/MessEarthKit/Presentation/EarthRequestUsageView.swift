@@ -33,6 +33,7 @@ final class EarthRequestUsageViewModel
 {
     private(set) var display: EarthRequestUsageDisplay?
     private(set) var isClearing = false
+    @ObservationIgnored private var isSuspended = false
     @ObservationIgnored private let store: EarthRequestUsageStore
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var expirationTask: Task<Void, Never>?
@@ -54,6 +55,7 @@ final class EarthRequestUsageViewModel
         let store = store
         let observer: EarthRequestObserver =
         { [weak self] event in
+            if await self?.isSuspended == true { return }
             await store.record(event)
             await self?.refresh()
         }
@@ -62,7 +64,7 @@ final class EarthRequestUsageViewModel
 
     func refresh()
     {
-        guard !isClearing else { return }
+        guard !isSuspended, !isClearing else { return }
         guard refreshTask == nil else { needsRefresh = true; return }
         needsRefresh = false
         expirationTask?.cancel()
@@ -83,7 +85,7 @@ final class EarthRequestUsageViewModel
 
     func clearCounter()
     {
-        guard !isClearing else { return }
+        guard !isSuspended, !isClearing else { return }
         isClearing = true
         generation &+= 1
         refreshTask?.cancel()
@@ -99,6 +101,24 @@ final class EarthRequestUsageViewModel
             // Pick up any new attempts that entered transport during the clear.
             scheduleExpiration(Date().addingTimeInterval(1))
         }
+    }
+
+    func suspendForStorageMove() async
+    {
+        isSuspended = true
+        generation &+= 1
+        let tasks = [refreshTask, expirationTask, clearTask].compactMap { $0 }
+        for task in tasks { task.cancel() }
+        for task in tasks { await task.value }
+        refreshTask = nil; expirationTask = nil; clearTask = nil
+        isClearing = false; needsRefresh = false
+        await store.close()
+    }
+
+    func resumeAfterStorageMoveFailure()
+    {
+        isSuspended = false
+        refresh()
     }
 
     private func apply(_ snapshot: EarthRequestUsageSnapshot)

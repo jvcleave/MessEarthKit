@@ -5,14 +5,16 @@ struct EarthPreviewView: NSViewRepresentable
 {
     let renderer: EarthPreviewRenderer
     let revision: UInt64
+    var allowsPanning = false
 
     func makeNSView(context: Context) -> EarthMetalView
     {
-        EarthMetalView(renderer: renderer)
+        EarthMetalView(renderer: renderer, allowsPanning: allowsPanning)
     }
 
     func updateNSView(_ view: EarthMetalView, context: Context)
     {
+        view.allowsPanning = allowsPanning
         view.refresh()
     }
 }
@@ -21,10 +23,12 @@ final class EarthMetalView: NSView
 {
     private let renderer: EarthPreviewRenderer
     private let metalView: MTKView
+    var allowsPanning: Bool
 
-    init(renderer: EarthPreviewRenderer)
+    init(renderer: EarthPreviewRenderer, allowsPanning: Bool)
     {
         self.renderer = renderer
+        self.allowsPanning = allowsPanning
         metalView = MTKView(frame: .zero, device: renderer.device)
         super.init(frame: .zero)
         metalView.colorPixelFormat = .bgra8Unorm_srgb
@@ -55,8 +59,28 @@ final class EarthMetalView: NSView
 
     override func mouseDragged(with event: NSEvent)
     {
-        renderer.orbit(horizontal: Float(event.deltaX), vertical: Float(event.deltaY))
+        if allowsPanning && event.modifierFlags.contains(.shift) { pan(event) }
+        else { renderer.orbit(horizontal: Float(event.deltaX), vertical: Float(event.deltaY)) }
         refresh()
+    }
+
+    override func rightMouseDragged(with event: NSEvent)
+    {
+        guard allowsPanning else { return }
+        pan(event)
+        refresh()
+    }
+
+    override func otherMouseDragged(with event: NSEvent)
+    {
+        guard allowsPanning else { return }
+        pan(event)
+        refresh()
+    }
+
+    private func pan(_ event: NSEvent)
+    {
+        renderer.pan(horizontal: Float(event.deltaX), vertical: Float(event.deltaY), viewportHeight: Float(bounds.height), aspect: Float(bounds.width / max(1, bounds.height)))
     }
 
     override func scrollWheel(with event: NSEvent)

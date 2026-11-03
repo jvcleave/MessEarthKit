@@ -35,6 +35,7 @@ enum EarthDeletionTarget: Sendable
 final class EarthProjectLibraryViewModel
 {
     let navigation = EarthProjectNavigation()
+    let exportViewer: EarthExportViewerViewModel
     var path: [EarthAppRoute] { get { navigation.path } set { navigation.path = newValue } }
     let settings: EarthSettingsViewModel
     private(set) var projects: [EarthProjectViewModel] = []
@@ -44,6 +45,7 @@ final class EarthProjectLibraryViewModel
     private(set) var errorMessage: String?
     private(set) var deletionTarget: EarthDeletionTarget?
     private(set) var isDeleting = false
+    private(set) var isMovingStorage = false
     private let downloadQueue = EarthDownloadQueue()
     private let preparationGate = EarthPreparationGate()
     @ObservationIgnored private let files: EarthAppFiles
@@ -56,6 +58,7 @@ final class EarthProjectLibraryViewModel
     init(files: EarthAppFiles, usageStore: EarthRequestUsageStore)
     {
         self.files = files
+        exportViewer = EarthExportViewerViewModel(service: EarthExportViewerService(files: files))
         store = EarthProjectStore(files: files)
         settings = EarthSettingsViewModel(files: files, usageStore: usageStore)
         reload()
@@ -63,12 +66,29 @@ final class EarthProjectLibraryViewModel
 
     func project(id: UUID) -> EarthProjectViewModel? { owners[id] }
 
-    var canStartWork: Bool { !isDeleting }
+    var canStartWork: Bool { !isDeleting && !isMovingStorage }
+
+    var canMoveStorage: Bool
+    {
+        canRequestDeletion && settings.canMoveStorage && !exportViewer.isLoading
+            && !downloadQueue.hasActiveWork
+            && owners.values.allSatisfy(\.canMoveStorage)
+    }
+
+    func beginStorageMove() throws
+    {
+        guard canMoveStorage else { throw EarthStorageMoveError.busy }
+        isMovingStorage = true
+        exportViewer.close()
+        for owner in owners.values { owner.preview.setVisible(false) }
+    }
+
+    func endStorageMove() { isMovingStorage = false }
 
     var canRequestDeletion: Bool { canStartWork && !isCreating && !isLoading }
 
     func canDeleteProject(_ id: UUID) -> Bool
-    { canRequestDeletion && owners[id]?.isBusy != true && owners[id]?.hasActiveDownloads != true && owners[id]?.isSaving != true }
+    { canRequestDeletion && !(exportViewer.isLoading && exportViewer.request?.projectID == id) && owners[id]?.isBusy != true && owners[id]?.hasActiveDownloads != true && owners[id]?.isSaving != true }
 
     func canDeleteLocation(_ projectID: UUID, locationID: UUID) -> Bool
     { canRequestDeletion && owners[projectID]?.canDeleteLocation(locationID) == true }
@@ -95,7 +115,7 @@ final class EarthProjectLibraryViewModel
 
     func reload()
     {
-        guard loadTask == nil, !isCreating, !isDeleting else { return }
+        guard canStartWork, loadTask == nil, !isCreating else { return }
         isLoading = true
         loadTask = Task
         { [weak self, store] in
@@ -121,7 +141,7 @@ final class EarthProjectLibraryViewModel
 
     func newProject()
     {
-        guard !isCreating, !isLoading, !isDeleting else { return }
+        guard canStartWork, !isCreating, !isLoading else { return }
         isCreating = true
         createTask = Task
         { [weak self, store] in

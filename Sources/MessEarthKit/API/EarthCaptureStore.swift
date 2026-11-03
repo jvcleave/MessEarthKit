@@ -6,6 +6,37 @@ public actor EarthCaptureStore
 {
     public init() {}
 
+    /// Adds or refreshes optional display identity on a prepared catalog and
+    /// each independently importable model. No source payload is decoded/changed.
+    /// Callers retain authorization for the collection throughout this operation.
+    public func recordIdentity(_ identity: EarthCaptureIdentity, collection: EarthPreparedCollection) throws
+    {
+        try Task.checkCancellation()
+        try identity.validate()
+        let index = try EarthPreparationIndex(directoryURL: collection.directoryURL)
+        let lock = try EarthAcquisitionLock(files: index.files)
+        defer { withExtendedLifetime(lock) {} }
+        let current = try index.snapshot()
+        guard current.sourceIdentifier == collection.sourceIdentifier,
+              current.profile == collection.profile, current.modelCount == collection.modelCount,
+              current.state == collection.state, current.state != .preparing,
+              identity.request.center == current.geographicOrigin
+        else { throw EarthPreparationError.sourceChanged }
+        if let saved = try EarthPreparedCaptureInfo.read(files: index.files),
+           saved.info.identity == identity, saved.info.modelID == nil
+        { return }
+        try index.forEachModel
+        { model in
+            try Task.checkCancellation()
+            let data = try EarthPreparedCaptureInfo(identity: identity, modelID: model.id).encoded()
+            try EarthPreparedCollectionFiles.write(data, path: "models/model-\(model.id)/" + EarthPreparedCaptureInfo.fileName, files: index.files)
+        }
+        try Task.checkCancellation()
+        // Root publication marks a complete annotation. A retry after interruption
+        // rewrites the model companions before publishing this final snapshot.
+        try EarthPreparedCollectionFiles.write(EarthPreparedCaptureInfo(identity: identity).encoded(), path: EarthPreparedCaptureInfo.fileName, files: index.files)
+    }
+
     /// Exports a paged file-backed catalog without materializing source Data or
     /// decoding models. Original IDs, placement and destination profile survive.
     @discardableResult

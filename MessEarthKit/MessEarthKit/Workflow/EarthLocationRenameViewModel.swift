@@ -55,7 +55,7 @@ final class EarthLocationRenameViewModel: Identifiable
                 let value = try await store.automaticLocationName(center: location.area.center)
                 guard let self, generation == job, !Task.isCancelled else { return }
                 proposedName = value
-                name = value.title(center: location.area.center)
+                name = value.title(area: location.area)
                 isResolving = false
                 lookupTask = nil
             }

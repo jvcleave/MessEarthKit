@@ -29,7 +29,7 @@ struct EarthLocationEdit: Equatable, Sendable
     var variantDetail: EarthProjectDetail?
     var title: String
     {
-        get { name.title(center: area.center) }
+        get { name.title(area: area) }
         set { name = .custom(newValue) }
     }
 }
@@ -48,7 +48,7 @@ struct EarthLocationRecord: Codable, Equatable, Identifiable, Sendable
     var isFrozen: Bool { frozenAt != nil }
     var nextVariantDetail: EarthProjectDetail { variantDetail ?? variants.last?.detail ?? .standard }
     var displayTitle: String { title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Untitled Location" : title }
-    var title: String { name.title(center: area.center) }
+    var title: String { name.title(area: area) }
     var edit: EarthLocationEdit { .init(name: name, area: area, variantDetail: variantDetail) }
 
     init(id: UUID = UUID(), date: Date, name: EarthLocationName, area: EarthLocationArea, detail: EarthProjectDetail = .standard)

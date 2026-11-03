@@ -18,6 +18,7 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
     private var yaw: Float = .pi / 5
     private var pitch: Float = .pi / 4
     private var zoomScale: Float = 1
+    private var panOffset = SIMD3<Float>.zero
 
     init(device: MTLDevice, library suppliedLibrary: MTLLibrary? = nil) throws
     {
@@ -61,20 +62,30 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         try EarthPreviewSceneBuilder(device: device).prepare(capture: capture)
     }
 
-    func publish(scene: EarthPreparedPreview)
+    func publish(scene: EarthPreparedPreview, camera: EarthPreviewCameraState? = nil)
     {
         lock.lock()
         self.scene = scene
-        zoomScale = 1
-        yaw = .pi / 5
-        pitch = .pi / 4
+        let camera = camera ?? EarthPreviewCameraState()
+        zoomScale = camera.zoomScale
+        panOffset = camera.panOffset
+        yaw = camera.yaw
+        pitch = camera.pitch
         lock.unlock()
+    }
+
+    var cameraState: EarthPreviewCameraState
+    {
+        lock.lock()
+        defer { lock.unlock() }
+        return EarthPreviewCameraState(yaw: yaw, pitch: pitch, zoomScale: zoomScale, panOffset: panOffset)
     }
 
     func resetCamera()
     {
         lock.lock()
         zoomScale = 1
+        panOffset = .zero
         yaw = .pi / 5
         pitch = .pi / 4
         lock.unlock()
@@ -95,6 +106,20 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         lock.unlock()
     }
 
+    func pan(horizontal: Float, vertical: Float, viewportHeight: Float, aspect: Float)
+    {
+        guard viewportHeight.isFinite, viewportHeight > 0, aspect.isFinite, aspect > 0, horizontal.isFinite, vertical.isFinite else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let scene else { return }
+        let back = SIMD3<Float>(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw))
+        let right = simd_normalize(simd_cross(SIMD3<Float>(0, 1, 0), back))
+        let up = simd_cross(back, right)
+        let distance = Self.fittingDistance(bounds: scene.bounds, aspect: aspect) * zoomScale
+        let offset = panOffset + (-right * horizontal + up * vertical) * (2 * distance * tan(Float.pi / 8) / viewportHeight)
+        if (0 ..< 3).allSatisfy({ offset[$0].isFinite }) { panOffset = offset }
+    }
+
     func zoom(delta: Float)
     {
         lock.lock()
@@ -102,26 +127,32 @@ final class EarthPreviewRenderer: NSObject, MTKViewDelegate, @unchecked Sendable
         lock.unlock()
     }
 
-    func draw(in view: MTKView)
+    func frame(aspect: Float) -> (scene: EarthPreparedPreview, viewProjection: simd_float4x4, eye: SIMD3<Float>)?
     {
         lock.lock()
-        let snapshot = (scene, yaw, pitch, zoomScale)
+        let snapshot = (scene, yaw, pitch, zoomScale, panOffset)
         lock.unlock()
-        guard let scene = snapshot.0, view.drawableSize.width > 0, view.drawableSize.height > 0,
+        guard let scene = snapshot.0, aspect.isFinite, aspect > 0 else { return nil }
+        let camera = Self.cameraFrame(bounds: scene.bounds, aspect: aspect, yaw: snapshot.1, pitch: snapshot.2, zoomScale: snapshot.3, panOffset: snapshot.4)
+        return (scene, camera.viewProjection, camera.eye)
+    }
+
+    func draw(in view: MTKView)
+    {
+        guard view.drawableSize.width > 0, view.drawableSize.height > 0,
+              let frame = frame(aspect: Float(view.drawableSize.width / view.drawableSize.height)),
               let descriptor = view.currentRenderPassDescriptor, let drawable = view.currentDrawable,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: descriptor)
         else { return }
-        let aspect = Float(view.drawableSize.width / view.drawableSize.height)
-        let camera = Self.cameraFrame(bounds: scene.bounds, aspect: aspect, yaw: snapshot.1, pitch: snapshot.2, zoomScale: snapshot.3)
-        encode(scene: scene, viewProjection: camera.viewProjection, eye: camera.eye, encoder: encoder)
+        encode(scene: frame.scene, viewProjection: frame.viewProjection, eye: frame.eye, encoder: encoder)
         encoder.endEncoding()
         command.present(drawable)
         command.commit()
     }
 
-    static func cameraFrame(bounds: EarthPreviewBounds, aspect: Float, yaw: Float = .pi / 5, pitch: Float = .pi / 4, zoomScale: Float = 1) -> (viewProjection: simd_float4x4, eye: SIMD3<Float>)
+    static func cameraFrame(bounds: EarthPreviewBounds, aspect: Float, yaw: Float = .pi / 5, pitch: Float = .pi / 4, zoomScale: Float = 1, panOffset: SIMD3<Float> = .zero) -> (viewProjection: simd_float4x4, eye: SIMD3<Float>)
     {
-        let center = bounds.center
+        let center = bounds.center + panOffset
         let distance = Self.fittingDistance(bounds: bounds, aspect: aspect) * zoomScale
         let eye = center + SIMD3(cos(pitch) * sin(yaw), sin(pitch), cos(pitch) * cos(yaw)) * distance
         let back = simd_normalize(eye - center)
@@ -192,4 +223,12 @@ private struct SurfaceUniforms
 {
     var baseColor: SIMD4<Float>
     var options: SIMD4<Float>
+}
+
+struct EarthPreviewCameraState: Equatable, Sendable
+{
+    var yaw: Float = .pi / 5
+    var pitch: Float = .pi / 4
+    var zoomScale: Float = 1
+    var panOffset = SIMD3<Float>.zero
 }

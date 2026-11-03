@@ -35,19 +35,24 @@ private actor NamingCities
     let center = try EarthGeographicOrigin(latitude: 41.87811347, longitude: -87.62980539)
     let added = try await store.addLocation(id: project.id, center: center)
     let location = try #require(added.editingLocation)
-    #expect(location.title == "Chicago · 41.87811, -87.62981")
+    #expect(location.title == "Chicago (41.88, -87.63), 40,000 m²" && location.area.center == center)
     var edit = location.edit
     let moved = try EarthGeographicOrigin(latitude: 43.12345678, longitude: -86.12345678)
     edit.area.center = moved
     let updated = try await store.updateEditor(id: project.id, locations: [location.id: edit])
     let named = try #require(updated.editingLocation)
-    #expect(named.title == "Other City · 43.12346, -86.12346" && named.area.center == moved)
+    #expect(named.title == "Other City (43.12, -86.12), 40,000 m²" && named.area.center == moved)
     // A later queued dimension edit may still carry the previous resolved city.
     // The store owns automatic city updates and must retain the current result.
     var queued = edit
     queued.area.widthMeters = "300"
     let dimensionEdit = try await store.updateEditor(id: project.id, locations: [location.id: queued])
-    #expect(dimensionEdit.editingLocation?.title == named.title)
+    #expect(dimensionEdit.editingLocation?.title == "Other City (43.12, -86.12), 60,000 m²")
+    var incomplete = queued
+    incomplete.area.widthMeters = ""
+    let pending = try await store.updateEditor(id: project.id, locations: [location.id: incomplete])
+    #expect(pending.editingLocation?.title == "Other City (43.12, -86.12)")
+    #expect(pending.editingLocation?.area.widthMeters == "")
     var custom = named.edit
     custom.title = "My capture"
     _ = try await store.updateEditor(id: project.id, locations: [location.id: custom])
@@ -65,7 +70,7 @@ private actor NamingCities
     copy.area.center = moved
     let copyID = try #require(copied.editingLocationID)
     let renamed = try await store.updateEditor(id: project.id, locations: [copyID: copy])
-    #expect(renamed.editingLocation?.title == "Other City · 43.12346, -86.12346")
+    #expect(renamed.editingLocation?.title == "Other City (43.12, -86.12), 40,000 m²")
     #expect(renamed.locations.first { $0.id == original.id } == original)
 }
 
@@ -96,14 +101,14 @@ private actor NamingCities
     let beforeSuggestion = try await files.readMetadata(.project(project.id))
     automatic.useAutomaticName()
     try await settleLocationRename(automatic)
-    #expect(automatic.name == "Chicago · 41.87811, -87.62981")
+    #expect(automatic.name == "Chicago (41.88, -87.63), 40,000 m²")
     #expect(try await files.readMetadata(.project(project.id)) == beforeSuggestion)
     automatic.save()
     try await settleLocationRename(automatic)
     try #require(automatic.didSave)
     let reopened = try await EarthProjectStore(files: files).open(id: project.id)
     let named = try #require(reopened.record.locations.first { $0.id == original.id })
-    #expect(named.name == .automatic(city: "Chicago") && named.title == "Chicago · 41.87811, -87.62981")
+    #expect(named.name == .automatic(city: "Chicago") && named.title == "Chicago (41.88, -87.63), 40,000 m²")
     #expect(named.area == original.area && named.frozenAt == original.frozenAt && named.variants == original.variants)
     #expect(reopened.record.editingLocationID == other.editingLocationID && reopened.record.selectedCaptureID == registered.selectedCaptureID)
     #expect(try Data(contentsOf: #require(source.rootSourceURL)) == manifest)
@@ -227,8 +232,10 @@ func sharedAreaChangesRefreshAutomaticNamesAndRetainCustomNames(customName: Bool
     _ = try await store.recordCapture(id: project.id, capture: .init(id: #require(UUID(uuidString: directory.lastPathComponent)), request: source.request), selection: selection)
     var adjustment = try await store.areaAdjustment(id: project.id, locationID: locationID)
     adjustment.area.center = try EarthGeographicOrigin(latitude: 43.12345678, longitude: -86.12345678)
+    adjustment.area.widthMeters = "300"
+    adjustment.area.heightMeters = "250"
     _ = try await store.applyAreaAdjustment(id: project.id, adjustment: adjustment)
     let reopened = try await EarthProjectStore(files: files).open(id: project.id)
-    #expect(reopened.record.editingLocation?.title == (customName ? "My area" : "Other City · 43.12346, -86.12346"))
+    #expect(reopened.record.editingLocation?.title == (customName ? "My area" : "Other City (43.12, -86.12), 75,000 m²"))
     #expect(await cities.centres.count == (customName ? 1 : 2))
 }

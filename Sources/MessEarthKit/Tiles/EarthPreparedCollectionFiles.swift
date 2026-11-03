@@ -117,6 +117,13 @@ enum EarthPreparedCollectionFiles
         try Task.checkCancellation()
         let source = try EarthPreparationIndex(directoryURL: collection.directoryURL)
         let snapshot = try source.snapshot()
+        let captureInfo = try EarthPreparedCaptureInfo.read(files: source.files)
+        if let captureInfo
+        {
+            guard captureInfo.info.modelID == nil,
+                  captureInfo.info.identity.request.center == snapshot.geographicOrigin
+            else { throw EarthPreparationError.invalidCollection }
+        }
         let selected = try source.validate(selection)
         guard selected > 0 else { throw EarthPreparationError.invalidCollection }
         try validateDestination(directoryURL, outside: collection.directoryURL)
@@ -141,6 +148,15 @@ enum EarthPreparedCollectionFiles
                 let manifest = try Data(contentsOf: model.rootSourceURL, options: .mappedIfSafe)
                 guard manifest.count == length else { throw EarthPreparationError.sourceChanged }
                 try EarthPreparedCollectionFiles.write(manifest, path: "models/model-\(model.id)/tileset.json", files: destination.files)
+                let infoPath = "models/model-\(model.id)/" + EarthPreparedCaptureInfo.fileName
+                if let modelInfo = try EarthPreparedCaptureInfo.read(files: source.files, path: infoPath)
+                {
+                    guard modelInfo.info.modelID == model.id,
+                          modelInfo.info.identity == captureInfo?.info.identity
+                    else { throw EarthPreparationError.sourceChanged }
+                    try EarthPreparedCollectionFiles.write(modelInfo.data, path: infoPath, files: destination.files)
+                }
+                else if captureInfo != nil { throw EarthPreparationError.sourceChanged }
                 try destination.commitModel(id: model.id, tileCount: model.tileCount, estimate: model.estimate, bytes: model.sourceByteCount, assets: assets)
             }
             switch selection
@@ -152,6 +168,8 @@ enum EarthPreparedCollectionFiles
             }
             let issue = snapshot.state == .ready ? nil : snapshot.interruptionReason ?? "Model preparation is incomplete."
             try EarthPreparedCollectionFiles.writeRoot(index: destination, selection: .all(), destination: destination.files, coversEntireSource: entire, incompleteReason: issue)
+            if let captureInfo
+            { try EarthPreparedCollectionFiles.write(captureInfo.data, path: EarthPreparedCaptureInfo.fileName, files: destination.files) }
             try destination.finish(issue == nil ? .ready : .partial, issue: issue)
             return directoryURL.appendingPathComponent("tileset.json")
         }

@@ -44,6 +44,16 @@ final class EarthSettingsViewModel
         }
     }
 
+    var canMoveStorage: Bool { loadTask == nil && settingsTask == nil && pendingSettings == nil && !isSavingKey && !usage.isClearing }
+
+    func suspendForStorageMove() async
+    {
+        if let credentialTask { await credentialTask.value }
+        await usage.suspendForStorageMove()
+    }
+
+    func resumeAfterStorageMoveFailure() { usage.resumeAfterStorageMoveFailure() }
+
     func setAPIKey(_ value: String)
     {
         apiKey = value
@@ -123,11 +133,26 @@ final class EarthSettingsViewModel
 struct EarthSettingsView: View
 {
     let viewModel: EarthSettingsViewModel
+    @Environment(EarthApplicationViewModel.self) private var application
 
     var body: some View
     {
         Form
         {
+            Section("Storage")
+            {
+                Text(application.storageDirectoryPath).textSelection(.enabled).font(.caption)
+                Button("Move Storage…", action: application.chooseStorageDirectory)
+                    .disabled(!application.canMoveStorage)
+                Text("Moves projects, captures, prepared models, exports, settings and request history to an empty folder.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !application.canMoveStorage
+                { Text(EarthStorageMoveError.busy.localizedDescription).font(.caption).foregroundStyle(.secondary) }
+                if !application.storageStatus.isEmpty { Text(application.storageStatus).font(.caption) }
+                if let error = application.storageMoveError { EarthErrorMessage(error) }
+                if application.previousStorageURL != nil
+                { Button("Show Previous Folder in Finder", action: application.revealPreviousStorage) }
+            }
             Section("Google Maps Tile API")
             {
                 SecureField("API key", text: Binding(get: { viewModel.apiKey }, set: viewModel.setAPIKey))

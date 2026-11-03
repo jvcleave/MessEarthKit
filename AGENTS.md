@@ -45,7 +45,8 @@ example project at `MessEarthKit/MessEarthKit.xcodeproj`.
   explicitly; do not supply placeholder geometry or silently change materials.
 - Preserve appearance by default. Filtering/lighting approximations require an
   explicit optimized-copy profile; retain that policy through save/export/import.
-- Combined standalone delivery uses GLB; USDZ remains optional future work.
+- Combined standalone delivery uses GLB or standard USDZ. USDZ simplification and
+  texture resizing require the explicit optimized delivery profile.
   Local coordinates use meters, East +X, Up +Y, North -Z. Use double precision
   through geographic origin subtraction.
 - Use cohesive feature files, explicit mutations, descriptive names, and no

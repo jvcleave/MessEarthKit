@@ -4,7 +4,7 @@ import Observation
 
 enum EarthProjectExportField: String, CaseIterable, Identifiable
 {
-    case normals = "Normals", vertexColors = "Vertex colors", textureCoordinates = "UV coordinates"
+    case vertexColors = "Vertex colors", textureCoordinates = "UV coordinates"
     case materials = "Materials", textures = "Textures"
 
     var id: Self { self }
@@ -12,7 +12,6 @@ enum EarthProjectExportField: String, CaseIterable, Identifiable
     {
         switch self
         {
-            case .normals: \.includeNormals
             case .vertexColors: \.includeVertexColors
             case .textureCoordinates: \.includeTextureCoordinates
             case .materials: \.includeMaterials
@@ -37,6 +36,8 @@ final class EarthProjectExportViewModel
     private(set) var managementError: String?
     private(set) var history: [EarthProjectExportItem] = []
     private(set) var unrecordedExport: EarthProjectExportRecord?
+    private var formats: [UUID: EarthExportFormat] = [:]
+    private var optimizationChoices: [UUID: EarthExportOptimizationSettings] = [:]
     private var choices: [UUID: EarthGLBExportOptions] = [:]
     @ObservationIgnored private let service: EarthProjectExportService
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -45,7 +46,25 @@ final class EarthProjectExportViewModel
 
     init(service: EarthProjectExportService) { self.service = service }
 
-    func options(for variantID: UUID) -> EarthGLBExportOptions { choices[variantID] ?? .full }
+    var projectID: UUID { service.projectID }
+
+    // Map delivery omits generated normals; SDK callers retain their own choice.
+    func options(for variantID: UUID) -> EarthGLBExportOptions { choices[variantID] ?? EarthGLBExportOptions(includeNormals: false) }
+
+    func format(for variantID: UUID) -> EarthExportFormat { formats[variantID] ?? .glb }
+    func optimization(for variantID: UUID) -> EarthExportOptimizationSettings { optimizationChoices[variantID] ?? .init() }
+
+    func setFormat(_ format: EarthExportFormat, variantID: UUID)
+    {
+        guard !isBusy else { return }
+        formats[variantID] = format
+    }
+
+    func setOptimization(_ settings: EarthExportOptimizationSettings, variantID: UUID)
+    {
+        guard !isBusy else { return }
+        optimizationChoices[variantID] = settings
+    }
 
     func setOption(_ field: EarthProjectExportField, included: Bool, variantID: UUID)
     {
@@ -58,7 +77,7 @@ final class EarthProjectExportViewModel
                 if included { value.includeTextureCoordinates = true; value.includeMaterials = true }
             case .textureCoordinates, .materials:
                 if !included { value.includeTextures = false }
-            case .normals, .vertexColors: break
+            case .vertexColors: break
         }
         choices[variantID] = value
     }
@@ -112,6 +131,8 @@ final class EarthProjectExportViewModel
     {
         guard !isBusy, !isLoadingHistory else { return }
         let requestedOptions = options(for: variantID)
+        let requestedFormat = format(for: variantID)
+        let requestedOptimization = optimization(for: variantID)
         let job = UUID()
         jobID = job
         self.variantID = variantID
@@ -127,7 +148,7 @@ final class EarthProjectExportViewModel
             {
                 try await saveEdits()
                 try Task.checkCancellation()
-                let result = try await service.export(variantID: variantID, options: requestedOptions)
+                let result = try await service.export(variantID: variantID, options: requestedOptions, format: requestedFormat, optimization: requestedOptimization)
                 { [weak self] progress in
                     Task
                     { @MainActor [weak self] in
@@ -146,7 +167,7 @@ final class EarthProjectExportViewModel
                 }
                 guard let self else { return }
                 // A completed publication is durable even after a simultaneous Cancel.
-                status = result.infoWarning ?? "Exported GLB"
+                status = result.infoWarning ?? "Exported \(requestedFormat.rawValue)"
                 do { history = try await service.exports(); historyError = nil }
                 catch { historyError = error.localizedDescription }
             }

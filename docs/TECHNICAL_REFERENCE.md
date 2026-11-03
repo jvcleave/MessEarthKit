@@ -33,6 +33,8 @@ has no sibling checkout paths or runtime Python/Blender dependency.
 | Prepare and page independently loadable models | `EarthModelPreparer` and `EarthPreparedCollection` |
 | Save a source/model folder | `EarthCaptureStore` |
 | Check and write a standalone combined GLB | `EarthGLBExporter` |
+| Check and write standard or optimized USDZ | `EarthUSDZExporter` |
+| Read this SDK's saved USDZ export into CPU values | `EarthUSDZExportReader` |
 
 Examples run in an asynchronous host context. Keys, observers and destination URLs
 are supplied by the host, which owns file authorization, rendering and retention.
@@ -111,6 +113,43 @@ expose/export only committed models with an explicit incomplete marker.
 decodes meshes or contacts the service. See the
 [preparation contract](#preparation-and-appearance) for profiles and subdivision.
 
+### Prepared-folder display identity
+
+Callers can attach a location and variant label to a committed prepared catalog:
+
+```swift
+let identity = try EarthCaptureIdentity(
+    locationName: "Downtown", request: raw.request, detailName: "High"
+)
+try await EarthCaptureStore().recordIdentity(identity, collection: prepared)
+```
+
+This metadata-only worker operation writes optional `capture.info.json` files in
+the catalog directory and each `models/model-N/` directory. It retains UUID-based
+storage identities and preserves raw archives, GLBs, tilesets and placement.
+The caller retains write authorization until the operation completes. Preparing
+catalogs cannot be annotated; ready and partial catalogs contain committed models.
+The identity request's centre must match the catalog's geographic origin.
+
+The companion contains the flat Codable fields of
+[`EarthCaptureIdentity`](../Sources/MessEarthKit/API/EarthCaptureIdentity.swift):
+`formatVersion` (1), `locationName`, `request` and `detailName`. A model companion
+also includes a positive integer `modelID`; the catalog companion omits it.
+Each file is at most 16 KiB. Consumers can decode the public identity type and
+the optional model ID without opening a project or decoding geometry. For
+example, a display label can be `Downtown - High - Model 2`.
+
+File-backed catalog export retains these companions, including original sparse
+model IDs in a subset. Supplied invalid metadata or mismatched root/model
+identity fails explicitly. Missing companions are allowed. Companion bytes are
+separate from model payload estimates and geometry/texture budgets.
+
+Annotation serializes artifact writes and publishes the catalog companion last.
+Repeating the same complete identity avoids walking the model catalog. A changed
+identity refreshes each model companion; cancellation leaves raw assets intact
+and a later call can finish annotation. This API does not change scene- or
+library-owned names in consuming applications.
+
 ### Export a standalone GLB
 
 ```swift
@@ -131,6 +170,86 @@ alive through preflight and export. A plan captures selected input fingerprints,
 options and the exact output byte count when export is possible; changed inputs
 require a new preflight. See [combined GLB output](#combined-glb-output) for
 attribute choices and metadata.
+
+For an explicitly reduced standard GLB, pass
+`optimization: try EarthMeshOptimizationProfile(triangleFraction: 0.5, maximumErrorMeters: 0.1)`
+to the same preflight. Nil preserves ordinary output. Reduction respects the
+selected output channels, protected borders and transparent triangle order, using
+the same offline meshoptimizer path as USDZ. Textures are not resized or re-encoded.
+The requested target may be unreachable; the error is an algorithmic bound, not
+a complete photometric or independent Hausdorff guarantee. No runtime compression
+extension or meshoptimizer decoder is required.
+
+`EarthGLBExportPlan.optimization` records the profile, source/output vertex and
+triangle counts and achieved maximum error. Preflight fingerprints both source
+and reduced geometry; writing repeats reduction per bounded model and checks the
+same output before atomic publication. `exportedOptimization(fileURL:)` reads the
+recorded result from bounded JSON without decoding binary geometry. It returns nil
+for ordinary deliveries. Omitted-normal thumbnail parts use regenerated flat
+normals, matching a standalone import. Acquisition/preparation sources stay intact.
+
+### Export a standalone USDZ
+
+```swift
+let exporter = EarthUSDZExporter()
+let optimization = try EarthUSDZOptimizationProfile(
+    triangleFraction: 0.5, maximumErrorMeters: 0.1,
+    maximumTextureDimension: nil // Keep original texture dimensions.
+)
+let plan = try await exporter.preflight(
+    collection: prepared, selection: .all(), destination: profile,
+    options: .full, optimization: optimization // nil for regular USDZ.
+)
+if plan.canExport {
+    let result = try await exporter.export(plan: plan, fileURL: newUSDZFileURL)
+    // result reports source/output counts, bytes and achieved maximum error.
+    let metadata = try await exporter.metadata(fileURL: result.fileURL)
+}
+```
+
+`EarthExportOptions` supplies the same five channel flags for GLB and USDZ.
+`EarthGLBExportOptions` remains its public source-compatible spelling. Retain
+source and destination authorization through checking and writing. USDZ plans
+capture input fingerprints but compute final bytes/counts during writing.
+Preflight conservatively admits original selection estimates against the
+destination profile before optimization; a reduction target does not authorize
+oversized input decoding.
+
+### Read an exported USDZ
+
+```swift
+let reader = EarthUSDZExportReader()
+let delivered = try await reader.read(fileURL: exportedUSDZURL)
+// Convert the immutable meshes/materials into host GPU resources.
+```
+
+The caller owns authorization and keeps the file unchanged until the worker
+returns. This reader supports the current USDZ dialect written by
+`EarthUSDZExporter`, including optimized deliveries. It is not a general USD
+importer. It reads actual archive geometry, embedded images and appearance;
+it does not look up the original capture, preparation or an external native SDK.
+Returned `EarthCapture.sourceFiles` retains the complete original USDZ bytes.
+
+The root and dependency inventory, stored/aligned ZIP32 headers and CRCs are
+checked. The known shader/property/primvar contract is validated explicitly;
+unknown graphs fail without placeholder materials. Native Model I/O geometry
+never leaves the worker. UVs return to the SDK's top-left convention. Raw RGBA,
+base factors, unlit/sidedness, alpha masks/blending, wraps and mip intent survive.
+The scalar appearance arrays are scanned without a per-scalar substring array.
+When normals were omitted, the reader generates flat face normals in double
+precision and admits the expanded vertex count against `maximumVertices`.
+Positions, corner order, colors and UVs stay intact. Zero-area faces without
+normals fail explicitly.
+
+Default SDK reader admission is 512 MiB source, 2m decoded vertices, 2m triangles,
+100,000 native nodes, 8192px textures and 256 MiB base texture pixels. The first
+root text is bounded to 8 MiB, each appearance layer to 32 MiB and each encoded
+image to 128 MiB. Callers can select other source, geometry, node and texture
+ceilings through `EarthImportLimits`.
+Native scratch, original bytes, material arrays and host/GPU copies add memory;
+these limits are not a peak-RSS promise. Oversized, corrupt or unsupported exports
+fail explicitly and the file remains intact. Cancellation is cooperative around
+native loading and within Swift loops.
 
 ### Bounded capture and in-memory collections
 
@@ -338,7 +457,7 @@ The output records these keys under GLB `extras`:
 
 | Key | Contents |
 | --- | --- |
-| `messEarthKitCombinedAsset` | Origin, source/profile identifiers, selected model IDs, individual attribution and full/subset/partial coverage. |
+| `messEarthKitCombinedAsset` | Origin, source/profile identifiers, selected model IDs, individual attribution and full/subset/partial coverage. Optimized GLB also records `optimization` with profile, source/output counts and maximum error. |
 | `messEarthKitCaptureIdentity` | Chosen name, full-precision request (center, ellipsoid height, dimensions, geometric error) and detail name. Supply `EarthCaptureIdentity` to preflight; reopen through `EarthCapture.identity`. |
 | `messEarthKitExportOptions` | Included attributes/materials/images, alongside the texture-mode marker. |
 
@@ -375,6 +494,97 @@ stateless decoder plugin once per process; instances and output remain request-o
 Cancellation is cooperative. An active native decode finishes before the next
 check; Swift traversal and vertex loops also check cancellation. Hosts retain
 file authorization until work finishes or observes cancellation.
+
+### USDZ output and optimization
+
+`EarthUSDZExporter` writes selected prepared models in their shared local meter
+frame (East +X, Up +Y, North -Z), with no recentering. Geographic subtraction has
+already occurred at double precision during preparation. Ordinary USDZ does not
+simplify, quantize or resize. It verifies source triangle order, positions,
+normals, UVs and RGB after public Model I/O conversion. Vertex storage may be
+reordered; triangle corner correspondence remains intact.
+
+The package writes binary Crate `.usdc` geometry through public Model I/O,
+worker-confined native objects, standard `.usda` appearance/dependency layers and
+PNG/JPEG images. A streaming ZIP32 writer uses stored members, CRC verification
+and 64-byte payload alignment. There is no ZIP deflate, ZIP64, meshopt extension
+or runtime meshoptimizer decoder. Archive bytes including directories must fit
+below 4 GiB and the archive supports at most 65,534 members. Binary geometry and
+optional offline reductions provide size savings, which depend on the source;
+varying appearance primvars remain text and textures often dominate file size.
+
+The standard USD Preview Surface graph represents source metallic/roughness,
+base factor, supported vertex tint, opacity/mask, sidedness and source images.
+Unlit surfaces use zero diffuse/specular plus emissive color. USD bottom-left
+UVs are written once from the SDK's top-left convention. `UsdUVTexture.scale`
+is interface-only: a textured mesh can retain a constant vertex tint, multiplied
+into its uniform scale. Textured meshes with varying RGB or effective alpha
+fail preflight while vertex colors are selected. Choose GLB to retain that
+appearance, or explicitly omit textures/colors. Untextured varying colors use
+standard primvar readers. Materials are emitted per mesh so different constant
+tints never overwrite a shared source material. Material omission is an
+explicit neutral surface, while geometry and requested vertex channels remain.
+Opaque sources ignore alpha; a zero mask cutoff is effectively opaque.
+Texture bytes are copied exactly unless explicit resizing is requested.
+Independent repeat/mirror/clamp axes are standard wrapS/wrapT. Nearest min/mag or
+nearest mip filtering fails preflight when textures are included, because
+standard USD Preview Surface does not preserve that contract. None versus linear
+mip intent is retained in the exporter marker for readers supporting it; generic
+USD viewers choose their own mip generation/filtering. Validate the intended
+viewer when exact sampling is required.
+
+Optimization requires an explicit `EarthUSDZOptimizationProfile`, independently
+of the preparation profile. meshoptimizer 1.3 performs exact vertex remapping
+over positions and selected output attributes, cache and fetch ordering, and
+attribute-aware edge collapse. Omitted normals, UVs and vertex colors do not
+create seams or contribute to the simplification error metric; in particular,
+generated preview normals do not obstruct exports that omit normals.
+Its target triangle fraction is in `(0, 1]` and its error bound is absolute local
+meters. Selected normal/UV/color attributes participate in error and discontinuity
+checks; mesh, material, tile and open UV borders are protected. No permissive seam
+collapse, overdraw sorting, quantization or vertex updates are selected. Blended
+meshes keep their topology and triangle order, using only lossless vertex
+remapping/fetch. A zero error or fraction 1 skips simplification. The optimizer
+removes exactly zero-area output triangles after nontransparent simplification
+and before vertex compaction, using Double precision with no area cutoff. An
+empty result fails export. The requested target may be unreachable. The reported
+meshoptimizer error is an algorithmic
+bound, not a complete photometric or independently measured Hausdorff guarantee.
+
+An optional maximum texture dimension in `1...16384` resamples larger images to
+fit their aspect ratio and writes PNG, preserving alpha. This is a selected
+appearance change. Nil leaves image bytes/dimensions intact. The profile is saved
+with the achieved counts/error; original acquisition and preparation files are
+never replaced. The public exporter does not alter the source preparation policy.
+
+The first root layer contains `customLayerData.string messEarthKitExport`, a
+Base64-encoded JSON object bounded to 1 MiB. `EarthUSDZExportMetadata` version 1
+records source identifier, double-precision geographic origin, optional capture
+identity, source preparation profile, selected model IDs, coverage/completeness,
+attribution, five channel flags, optional optimization profile, source/output
+vertex and triangle counts, and achieved error. It contains no private paths or
+credentials. `metadata(fileURL:)` reads only the bounded first stored root layer
+and validates the marker; nil denotes an unrelated USDZ without the marker.
+No separate information companion is required.
+
+The per-model appearance layers add standard `displayOpacity` and untextured
+shading primvars `earthDiffuseColor` and `earthOpacity`. Standard primvar readers
+drive untextured color/opacity. Textured color uses a constant scale, never a
+varying connection to an interface-only input. Surface
+`messEarthKit:baseColorFactor` and `messEarthKit:unlit`, plus texture
+`messEarthKit:vertexColorScale`, let a cooperating reader retain raw vertex
+colors and separate material factors without double application. The reader
+checks that the marker agrees with the standard scale and bound vertex colors.
+Texture `messEarthKit:mipmap` records `none` or `linear`. These markers do not
+replace the standard graph visible to other USD consumers.
+
+A writer pages one prepared model at a time, rechecks fingerprints, stages only
+its own output and atomically publishes a new file. It never overwrites an
+existing destination. Cancellation before publication removes staging; completed
+outputs remain durable. A decoded model, native conversion/readback, source
+images and optimization buffers can coexist. Delivery file size is not an import
+or peak-memory budget; consumers must define their own admission limits.
+
 
 ## Current supported subset
 
@@ -456,7 +666,9 @@ example app does not retain a separate calibration history or inspection/recover
 `requestObserver:` on acquisition/session APIs delivers typed `EarthRequestEvent`
 starts/finishes for actual transport attempts after cache/budget checks.
 `EarthRequestUsageStore(fileURL:)` provides actor-owned local history through
-`record`, `snapshot` and `clear`. The host supplies the authorized location,
+`record`, `snapshot` and `clear`. Hosts stop event/refresh work and call `close()`
+before moving its storage; a later operation lazily opens a connection again.
+The host supplies the authorized location,
 presentation and refresh/retention policy; the store does not query Google.
 
 ## Example app storage and lifecycle
@@ -466,13 +678,17 @@ metadata operations and external authorization lifetimes. SDK workers retain
 bounded streaming, hashing, SQLite and artifact publication. See the
 [app storage reference](APP_STORAGE.md).
 
-Managed locations are relative to `~/Documents/MessEarthKit/`:
+Managed locations are relative to the configured root, initially
+`~/Documents/MessEarthKit/`. **Settings → Storage → Move Storage…** moves the
+existing library to an empty folder and persists its authorization for later
+launches. [Storage relocation](APP_STORAGE.md#moving-storage) describes idle-work
+admission, verification, cancellation and retained-copy handling.
 
 | Content | Location |
 | --- | --- |
 | Raw source archive | `projects/<project UUID>/sources/<capture UUID>/` |
 | Prepared job | `projects/<project UUID>/prepared/<preparation UUID>/` |
-| GLB export | `projects/<project UUID>/output/<export UUID>/` |
+| GLB/USDZ export | `projects/<project UUID>/output/<export UUID>/` |
 | Local request history | `stats/RequestUsage.sqlite` |
 
 **Show Source Files** reveals a recorded archive. The user controls retention.
@@ -488,9 +704,12 @@ location ID and an independent active capture ID.
 
 The location editor's **Auto** button restores persistent automatic naming for
 existing locations, including custom-named and frozen locations. It resolves the
-city at that location's saved centre and displays latitude/longitude to five
-decimal places. Later centre changes update automatic names; manual edits restore
-custom naming. Lookup failure leaves the name intact, and stale lookup results
+city at that location's saved centre and displays latitude/longitude to two
+decimal places plus the selected footprint's width × height, rounded to whole
+square meters: `Chicago (41.88, -87.63), 40,000 m²`. Invalid or incomplete dimension
+edits omit the area until valid. Centre or dimension changes update automatic
+names; manual edits restore custom naming. Capture requests and exported metadata
+retain full coordinate precision. Lookup failure leaves the name intact, and stale lookup results
 cannot overwrite a later name or centre change. The operation changes no capture
 requests, downloaded files, prepared models or existing exports.
 
@@ -542,19 +761,31 @@ or source-folder inference.
 
 ### Export filenames and history
 
-The app exports whole variants. Filenames combine the sanitized location name,
+The app exports whole variants. Both variant and manual model-selection export
+offer vertex colors, UV coordinates, materials and textures. New combined GLB,
+optimized GLB, USDZ and optimized USDZ files omit normals; internal preparation and previews
+retain normal generation. The public SDK retains its configurable normals option
+and full defaults. Separate prepared-model folders preserve their source bytes.
+
+Filenames combine the sanitized location name,
 detail and included channels, for example
-`Chicago_41.87811_-87.62980_High_geom_norm_vcol_uv_mat_tex.glb`.
+`Chicago_41.88_-87.63_40000m2_High_geom_vcol_uv_mat_tex.glb`.
+Automatic filenames use two decimal places for coordinates and ungrouped whole
+square meters followed by `m2`, calculated from the captured request's dimensions.
 Every name includes `geom` (positions/triangle indices), followed by enabled
 `norm`, `vcol`, `uv`, `mat` and `tex` tags in that order. Minimal ends in
-`_geom.glb`. The suffix uses the same captured plan options as the writer.
-The GLB scene/root node retain the unmodified chosen name; capture identity
+`_geom.glb`. USDZ uses `.usdz`; optimized GLB/USDZ delivery adds `_optimized` before
+the channel tags. The suffix uses the same captured plan options as the writer.
+Earlier exports and SDK-authored files may include `norm`; their actual recorded
+channels still drive history inspection and automatic rename suggestions.
+The GLB scene/root node and USDZ metadata retain the unmodified chosen name; capture identity
 metadata restores the authored name on import.
 
 Each export offers **Rename…** and **Delete…** while project work is idle.
 Rename accepts letters, numbers, spaces, periods, hyphens and underscores, keeps
-the `.glb` extension and moves its optional information companion alongside it.
-Names must fit within 245 UTF-8 bytes including `.glb`, reserving room for the
+the original `.glb` or `.usdz` extension and moves any GLB information companion
+alongside it.
+Names must fit within 245 UTF-8 bytes including the extension, reserving room for the
 companion suffix. Rename preserves the export UUID, captured identity and file
 contents. Delete requires confirmation, moves that export's output folder to
 macOS Trash and removes its history entry. Missing files can also be removed
@@ -562,21 +793,62 @@ from history. Both actions leave the variant's source and prepared models intact
 See [storage lifetimes and failure handling](APP_STORAGE.md#source-preparation-and-export-lifetimes).
 
 The rename sheet's **Auto** action resolves the city at the export record's
-immutable capture centre and fills an editable city/coordinate/detail filename.
-Content tags come from the exported GLB's recorded options; older files without
+immutable capture centre and fills an editable city/coordinate/area/detail filename.
+Area comes from that export's saved capture dimensions.
+Content tags come from the exported file's recorded options; older GLBs without
 those options omit the tags. Auto only prepares a draft: the current map,
 location name, files and export history do not change until Rename is chosen.
 Failed lookup retains the existing draft and shows an error. Dismissal or manual
 editing cancels the lookup and rejects late results.
 
 Export history retains its schema and texture flag; detailed channel choices
-are stored in each new GLB. Each history entry lists its recorded geometry,
+are stored in each new GLB or USDZ. Each history entry lists its recorded geometry,
 normals, vertex colors, UV coordinates, materials and textures. The app reads
 those choices from the GLB's bounded JSON header through
 `EarthGLBExporter.exportedOptions(fileURL:)`, without decoding geometry or relying
-on its filename or the current toggle settings. Missing files or absent choices
+on its filename or the current toggle settings. Optimized GLB also reads the
+recorded reduction through `exportedOptimization(fileURL:)`, retaining its
+settings and counts through rename and reopening. USDZ history reads the embedded
+metadata through `EarthUSDZExporter.metadata(fileURL:)` and reports source/output
+triangle counts, achieved meter error and whether optimization was selected. Missing files or absent choices
 display unavailable contents; malformed output metadata reports a per-file error without
 discarding history. The optional information companion is not required.
+
+### Exported model viewer
+
+Each available export-history entry offers VIEW. One dedicated app window uses
+`EarthExportViewerViewModel` for selection/job state and
+`EarthExportViewerService` for worker reads and GPU preparation. GLB uses
+`EarthCaptureImporter`; USDZ uses `EarthUSDZExportReader`. Both feed the existing
+Metal preview scene builder and renderer, with source unlit color or the same
+simple lit-preview lighting used by capture previews. The viewer is not a
+reference for every consuming app's PBR environment.
+
+The picker lists saved files for the requested variant. Format, bytes, vertices
+and triangles are cached from the delivered file; current export toggles do not
+change an existing view. No source acquisition, preparation or re-export occurs.
+Switching exports within the same variant preserves the camera for comparison.
+Orbit/pan/zoom and Frame All share one camera; pan is enabled only for this
+viewer, leaving capture-preview gestures unchanged.
+
+A replacement clears the prior scene, cancels its job and waits for native work
+to finish before starting the latest request. Stale completion cannot publish.
+Close cancels work and releases the scene/renderer. An explicit retry rechecks
+history and current file availability. GPU admission uses the existing automatic
+working-set budget, including prior allocations, viewport and upload headroom;
+no implicit decimation or texture reduction is applied to fit the viewer.
+
+Whole-map decoding has viewer-specific source, vertex and decoded-texture
+allowances derived from the remaining device budget and physical memory. It
+does not apply the SDK's per-capture defaults to a combined exported map. Texture
+edges remain bounded to 16,384 pixels and native nodes to 100,000. These are
+conservative admission allowances, not a peak process-memory guarantee. File,
+decode and GPU admission failures identify the viewer limit and its allowance.
+
+The app-files owner holds an export read lease through decode/upload. Rename,
+export deletion and project deletion reject mutations of files still being read;
+unrelated metadata work remains available. After upload, GPU resources are
+independent of the source file. See [export read ownership](APP_STORAGE.md#export-viewer-read-lifetime).
 
 ### Preview ownership
 

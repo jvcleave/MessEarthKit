@@ -10,6 +10,7 @@ public struct EarthGLBInfo: Codable, Sendable
     public let glb: Asset
     public let geometry: Geometry
     public let exportOptions: EarthGLBExportOptions
+    public let optimization: EarthMeshOptimizationResult?
     public let attributions: [String]
     /// WGS84 origin of local geometry. Nil in companions written before location
     /// metadata was added; new exports always include it at Double precision.
@@ -72,9 +73,21 @@ public struct EarthGLBInfo: Codable, Sendable
     }
 
     private enum CodingKeys: String, CodingKey
-    { case schemaVersion, name, exportedAt, glb, geometry, exportOptions, attributions, geographicOrigin, captureIdentity, thumbnail }
+    { case schemaVersion, name, exportedAt, glb, geometry, exportOptions, optimization, attributions, geographicOrigin, captureIdentity, thumbnail }
 
-    init(name: String, fileName: String, byteCount: Int, sha256: String, geometry: Geometry, options: EarthGLBExportOptions, attributions: [String], geographicOrigin: EarthGeographicOrigin, captureIdentity: EarthCaptureIdentity?, thumbnail: Thumbnail?)
+    init(
+        name: String,
+        fileName: String,
+        byteCount: Int,
+        sha256: String,
+        geometry: Geometry,
+        options: EarthGLBExportOptions,
+        optimization: EarthMeshOptimizationResult? = nil,
+        attributions: [String],
+        geographicOrigin: EarthGeographicOrigin,
+        captureIdentity: EarthCaptureIdentity?,
+        thumbnail: Thumbnail?
+    )
     {
         schemaVersion = 1
         self.name = name
@@ -82,6 +95,7 @@ public struct EarthGLBInfo: Codable, Sendable
         glb = Asset(fileName: fileName, byteCount: byteCount, sha256: sha256)
         self.geometry = geometry
         exportOptions = options
+        self.optimization = optimization
         self.attributions = attributions
         self.geographicOrigin = geographicOrigin
         self.captureIdentity = captureIdentity
@@ -97,6 +111,7 @@ public struct EarthGLBInfo: Codable, Sendable
         glb = try values.decode(Asset.self, forKey: .glb)
         geometry = try values.decode(Geometry.self, forKey: .geometry)
         exportOptions = try values.decode(EarthGLBExportOptions.self, forKey: .exportOptions)
+        optimization = try values.decodeIfPresent(EarthMeshOptimizationResult.self, forKey: .optimization)
         attributions = try values.decode([String].self, forKey: .attributions)
         geographicOrigin = try values.decodeIfPresent(EarthGeographicOrigin.self, forKey: .geographicOrigin)
         captureIdentity = try values.decodeIfPresent(EarthCaptureIdentity.self, forKey: .captureIdentity)
@@ -114,6 +129,7 @@ public struct EarthGLBInfo: Codable, Sendable
         try values.encode(glb, forKey: .glb)
         try values.encode(geometry, forKey: .geometry)
         try values.encode(exportOptions, forKey: .exportOptions)
+        try values.encodeIfPresent(optimization, forKey: .optimization)
         try values.encode(attributions, forKey: .attributions)
         try values.encode(geographicOrigin, forKey: .geographicOrigin)
         try values.encode(captureIdentity, forKey: .captureIdentity)
@@ -152,6 +168,12 @@ public struct EarthGLBInfo: Codable, Sendable
               zip(geometry.minimum, geometry.maximum).allSatisfy({ pair in pair.0.isFinite && pair.1.isFinite && pair.0 <= pair.1 })
         else { throw EarthGLBInfoError.invalidInfo }
         try exportOptions.validate()
+        if let optimization
+        {
+            try optimization.validate()
+            guard optimization.vertexCount == geometry.vertexCount, optimization.triangleCount == geometry.triangleCount
+            else { throw EarthGLBInfoError.invalidInfo }
+        }
         if let captureIdentity
         {
             try captureIdentity.validate()

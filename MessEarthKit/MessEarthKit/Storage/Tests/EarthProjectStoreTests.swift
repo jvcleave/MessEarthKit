@@ -93,7 +93,7 @@ private func projectLibraryReportsInvalidCurrentFilesWithoutReplacingThem(scenar
 
 /// Reuse the existing independent orientation GLB. SDK journal/preparer APIs
 /// construct a real current artifact; no app test reimplements their codecs.
-func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: EarthSourceArchive? = nil, placements: Int = 1, mipmapped: Bool = false, origin: EarthGeographicOrigin? = nil, state: EarthSourceArchive.State = .downloaded) async throws -> EarthSourceArchive
+func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: EarthSourceArchive? = nil, placements: Int = 1, mipmapped: Bool = false, linearSampling: Bool = false, origin: EarthGeographicOrigin? = nil, state: EarthSourceArchive.State = .downloaded) async throws -> EarthSourceArchive
 {
     let directory: URL
     let request: EarthDownloadRequest
@@ -114,6 +114,11 @@ func projectSourceFixture(files: EarthAppFiles, projectID: UUID, existing: Earth
         // the authored pixels/geometry and the GLB's existing chunk lengths.
         let range = try #require(bytes.range(of: Data("\"minFilter\":9728".utf8)))
         bytes.replaceSubrange(range, with: Data("\"minFilter\":9987".utf8))
+    }
+    if linearSampling
+    {
+        let range = try #require(bytes.range(of: Data("\"magFilter\":9728".utf8)))
+        bytes.replaceSubrange(range, with: Data("\"magFilter\":9729".utf8))
     }
     let assetID = EarthSourceAccess.digest(Data("project-fixture".utf8))
     let file = try index.files.checked("tiles/\(assetID).glb")

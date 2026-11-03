@@ -11,43 +11,58 @@ import SwiftUI
 @main
 struct MessEarthKitApp: App
 {
-    @State private var library: EarthProjectLibraryViewModel?
-    @State private var storageError: String?
+    @State private var application = EarthApplicationViewModel()
 
     var body: some Scene
     {
         Window("MessEarthKit", id: "workspace")
         {
-            if let library { EarthProjectLibraryView(viewModel: library) }
-            else if let storageError
+            ZStack
             {
-                ContentUnavailableView
+                Group
                 {
-                    Label("Storage unavailable", systemImage: "folder.badge.questionmark")
-                } description: {
-                    EarthErrorMessage(storageError)
-                } actions: {
-                    Button("Retry") { self.storageError = nil }
+                    if let library = application.library
+                    { EarthProjectLibraryView(viewModel: library).environment(library.exportViewer).id(ObjectIdentifier(library)) }
+                    else if let error = application.openingError
+                    {
+                        ContentUnavailableView
+                        {
+                            Label("Storage unavailable", systemImage: "folder.badge.questionmark")
+                        } description: {
+                            EarthErrorMessage(error)
+                        } actions: {
+                            Button("Retry", action: application.retryOpening)
+                        }
+                    }
+                    else
+                    {
+                        ProgressView("Opening project storage…")
+                            .task { await application.openLibrary() }
+                    }
+                }
+                .disabled(application.isMovingStorage)
+                if application.isMovingStorage
+                {
+                    VStack(spacing: 12)
+                    {
+                        ProgressView(application.storageStatus)
+                        Button("Cancel Move", action: application.cancelStorageMove)
+                    }
+                    .padding(24)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 }
             }
-            else
-            {
-                ProgressView("Opening project storage…")
-                    .task { await openLibrary() }
-            }
+            .environment(application)
         }
         .defaultSize(width: 1440, height: 900)
-    }
 
-    @MainActor
-    private func openLibrary() async
-    {
-        do
+        Window("Exported Model", id: "export-viewer")
         {
-            let appFiles = try await EarthAppFiles.openDefault()
-            let usageStore = try await EarthRequestUsageStore(fileURL: appFiles.requestUsageURL())
-            library = EarthProjectLibraryViewModel(files: appFiles, usageStore: usageStore)
+            if let library = application.library
+            { EarthExportViewerView(viewModel: library.exportViewer).disabled(application.isMovingStorage) }
+            else { ProgressView("Opening project storage…") }
         }
-        catch { storageError = error.localizedDescription }
+        .defaultSize(width: 1000, height: 760)
+        .defaultLaunchBehavior(.suppressed)
     }
 }

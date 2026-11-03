@@ -1,5 +1,6 @@
 import Foundation
 @testable import MessEarthKit
+import ModelIO
 import Testing
 
 private func projectExportService(files: EarthAppFiles, store: EarthProjectStore, projectID: UUID, cityLookup: @escaping EarthProjectStore.CityLookup = { _ in throw EarthLocationNamingError.cityUnavailable }) -> EarthProjectExportService
@@ -85,14 +86,14 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     let options: EarthGLBExportOptions
     switch choice
     {
-        case .full: options = .full
-        case .untextured: options = .untextured
+        case .full: options = .init(includeNormals: false)
+        case .untextured: options = .init(includeNormals: false, includeTextures: false)
         case .minimal: options = .minimal
         case .custom: options = .init(includeNormals: false, includeVertexColors: false)
     }
-    #expect(export.options(for: otherID) == .full)
+    #expect(export.options(for: otherID) == EarthGLBExportOptions(includeNormals: false))
     export.export(variantID: variantID, saveEdits: {}, onFinished: {})
-    export.setOption(.normals, included: !options.includeNormals, variantID: variantID)
+    export.setOption(.vertexColors, included: !options.includeVertexColors, variantID: variantID)
     #expect(export.isLoading && export.options(for: variantID) == options)
     try await settleExport(export)
     try #require(export.errorMessage == nil && export.historyError == nil)
@@ -105,8 +106,8 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     let suffix: String
     switch choice
     {
-        case .full: suffix = "_geom_norm_vcol_uv_mat_tex"
-        case .untextured: suffix = "_geom_norm_vcol_uv_mat"
+        case .full: suffix = "_geom_vcol_uv_mat_tex"
+        case .untextured: suffix = "_geom_vcol_uv_mat"
         case .minimal: suffix = "_geom"
         case .custom: suffix = "_geom_uv_mat_tex"
     }
@@ -122,6 +123,11 @@ private enum ProjectExportChoice: CaseIterable, Sendable
     #expect(imported.identity == (try EarthCaptureIdentity(locationName: edit.title, request: raw.request, detailName: "standard")))
     #expect(info.geographicOrigin == center && info.captureIdentity == imported.identity)
     let json = try EarthGLBDecoder(limits: EarthImportLimits()).preflight(data: Data(contentsOf: target))
+    for mesh in try #require(json["meshes"] as? [[String: Any]])
+    {
+        for primitive in try #require(mesh["primitives"] as? [[String: Any]])
+        { #expect(try #require(primitive["attributes"] as? [String: Any])["NORMAL"] == nil) }
+    }
     let extras = try #require(json["extras"] as? [String: Any])
     let recordedOptions = try JSONSerialization.data(withJSONObject: #require(extras["messEarthKitExportOptions"]))
     #expect(try JSONDecoder().decode(EarthGLBExportOptions.self, from: recordedOptions) == options)
@@ -286,17 +292,24 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     defer { try? FileManager.default.removeItem(at: root) }
     let files = try EarthAppFiles(storageRootURL: root)
     try await files.initialize()
-    let store = EarthProjectStore(files: files)
+    let store = EarthProjectStore(files: files, cityLookup: { _ in "Chicago" })
     let project = try await store.create()
     let center = try EarthGeographicOrigin(latitude: 41.87811347, longitude: -87.62980539)
     let raw = try await projectSourceFixture(files: files, projectID: project.id, origin: center)
     let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
+    _ = try await store.restoreAutomaticLocationName(id: project.id, locationID: #require(registered.editingLocationID))
     let service = projectExportService(files: files, store: store, projectID: project.id, cityLookup: { point in
         #expect(point == center)
         return "Chicago"
     })
     let result = try await service.export(variantID: #require(registered.selectedCaptureID), options: .untextured, progress: { _ in })
-    _ = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 40.7, longitude: -74), title: "Elsewhere")
+    #expect(result.fileURL.lastPathComponent == "Chicago_41.88_-87.63_40000m2_Standard_geom_norm_vcol_uv_mat.glb")
+    #expect(result.output.source.request == raw.request)
+    let other = try await store.addLocation(id: project.id, center: EarthGeographicOrigin(latitude: 40.7, longitude: -74), title: "Elsewhere")
+    var otherArea = try #require(other.editingLocation).edit
+    otherArea.area.widthMeters = "300"
+    otherArea.area.heightMeters = "500"
+    _ = try await store.updateEditor(id: project.id, locations: [#require(other.editingLocationID): otherArea])
     let before = try await store.record(id: project.id)
     let metadata = try #require(try await files.readMetadata(.exports(project.id)))
     let bytes = try Data(contentsOf: result.fileURL)
@@ -305,7 +318,7 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     let draft = export.renameDraft(for: result.output)
     draft.useAutomaticName()
     try await settleRename(draft)
-    #expect(draft.name == "Chicago_41.87811_-87.62981_Standard_geom_norm_vcol_uv_mat")
+    #expect(draft.name == "Chicago_41.88_-87.63_40000m2_Standard_geom_norm_vcol_uv_mat")
     #expect(try await files.readMetadata(.exports(project.id)) == metadata)
     #expect(try Data(contentsOf: result.fileURL) == bytes)
     let unavailable = EarthExportRenameViewModel(record: result.output, automaticName: { throw EarthLocationNamingError.cityUnavailable })
@@ -360,7 +373,7 @@ private func projectExportRejectsInvalidHistoryWithoutReplacement(corruption: Ex
     let legacyTile = try #require(FileManager.default.contentsOfDirectory(at: raw.directoryURL.appendingPathComponent("tiles"), includingPropertiesForKeys: nil).first { $0.pathExtension == "glb" })
     let legacyBytes = try Data(contentsOf: legacyTile)
     try legacyBytes.write(to: withoutCompanionURL)
-    #expect(try await service.automaticName(for: withoutCompanion) == "Chicago_41.87811_-87.62981_Standard.glb")
+    #expect(try await service.automaticName(for: withoutCompanion) == "Chicago_41.88_-87.63_40000m2_Standard.glb")
     #expect(try Data(contentsOf: withoutCompanionURL) == legacyBytes)
 }
 
@@ -433,4 +446,69 @@ private enum ExportDeletionCase: CaseIterable, Sendable { case available, missin
     #expect(try Data(contentsOf: retained.fileURL) == retainedBytes)
     #expect(try Data(contentsOf: #require(raw.rootSourceURL)) == sourceBytes)
     #expect(try await store.record(id: project.id) == before)
+}
+
+@Test(arguments: [EarthExportFormat.usdz, .optimizedUSDZ, .optimizedGLB])
+@MainActor private func projectReducedExportRetainsOptionsHistoryAndExtension(format: EarthExportFormat) async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = try EarthAppFiles(storageRootURL: root)
+    try await files.initialize()
+    let store = EarthProjectStore(files: files)
+    let project = try await store.create()
+    let raw = try await projectSourceFixture(files: files, projectID: project.id, mipmapped: true, linearSampling: true)
+    let registered = try await projectRegisterSource(files: files, store: store, projectID: project.id, source: raw)
+    let variantID = try #require(registered.selectedCaptureID)
+    let service = projectExportService(files: files, store: store, projectID: project.id)
+    let viewModel = EarthProjectExportViewModel(service: service)
+    viewModel.setFormat(format, variantID: variantID)
+    viewModel.setOption(.vertexColors, included: false, variantID: variantID)
+    let options = viewModel.options(for: variantID)
+    #expect(!options.includeNormals && options.includeTextures)
+    viewModel.export(variantID: variantID, saveEdits: {}, onFinished: {})
+    // The active operation snapshots its format/settings before scheduling work.
+    viewModel.setFormat(.glb, variantID: variantID)
+    try await settleExport(viewModel)
+    #expect(viewModel.errorMessage == nil)
+    let item = try #require(viewModel.history.first)
+    #expect(item.record.fileName.hasSuffix("." + format.fileExtension) && item.exportedOptions == options)
+    #expect((item.glbOptimization != nil) == (format == .optimizedGLB))
+    #expect((item.usdzMetadata?.optimization != nil) == (format == .optimizedUSDZ))
+    let original = try await files.exportFileURL(projectID: project.id, record: item.record)
+    #expect(!original.lastPathComponent.contains("_norm_"))
+    let decoded: EarthCapture
+    if format.isGLB
+    { decoded = try await EarthCaptureImporter().importFile(fileURL: original) }
+    else
+    {
+        let asset = MDLAsset(url: original)
+        var meshCount = 0
+        func checkGeometry(_ object: MDLObject)
+        {
+            if let mesh = object as? MDLMesh
+            {
+                meshCount += 1
+                #expect(mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeNormal, as: .float3) == nil)
+                #expect(mesh.vertexAttributeData(forAttributeNamed: MDLVertexAttributeTextureCoordinate, as: .float2) != nil)
+            }
+            for child in object.children.objects { checkGeometry(child) }
+        }
+        for index in 0 ..< asset.count { checkGeometry(asset.object(at: index)) }
+        #expect(meshCount > 0)
+        decoded = try await EarthUSDZExportReader().read(fileURL: original)
+    }
+    #expect(decoded.triangleCount == 14 && decoded.materials.contains { $0.baseColorTexture != nil })
+    let bytes = try Data(contentsOf: original)
+    let renamed = try await service.rename(item.record, to: "Renamed Map." + format.fileExtension.uppercased())
+    let result = try #require(renamed.first)
+    #expect(result.record.fileName == "Renamed Map." + format.fileExtension && result.exportedOptions == options)
+    let url = try await files.exportFileURL(projectID: project.id, record: result.record)
+    #expect(try Data(contentsOf: url) == bytes)
+    let reopened = projectExportService(files: files, store: EarthProjectStore(files: files), projectID: project.id)
+    let history = try await reopened.exports()
+    #expect(history.count == 1 && history.first?.exportedOptions == options)
+    #expect(history.first?.usdzMetadata?.sourceIdentifier == item.usdzMetadata?.sourceIdentifier)
+    #expect(history.first?.glbOptimization == item.glbOptimization)
+    #expect(try await EarthSourceArchive.open(directoryURL: raw.directoryURL).request == raw.request)
 }

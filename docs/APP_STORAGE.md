@@ -1,7 +1,7 @@
 # Example app storage and file access
 
 MessEarthKit includes a macOS example app for downloading geographic 3D tiles,
-preparing models, previewing captures and exporting GLBs. This reference describes
+preparing models, previewing captures and exporting GLBs and USDZs. This reference describes
 the app's file ownership and persistence rules. The reusable Swift package
 accepts caller-supplied locations and does not choose the app's storage root.
 See the [technical reference](TECHNICAL_REFERENCE.md#example-app-storage-and-lifecycle)
@@ -29,7 +29,8 @@ remain independent of its concrete file owner.
 
 ## Managed locations
 
-The default root is `~/Documents/MessEarthKit/`:
+The default root is `~/Documents/MessEarthKit/`. Settings can move this complete
+managed layout to a user-selected root:
 
 ```text
 appSettings.json
@@ -52,10 +53,58 @@ SDK artifact names/layouts stay with the SDK. Export naming is documented in the
 An output directory may also contain its optional `.glb.info.json`; export history
 continues to identify the independent GLB. See [the companion format](GLB_INFO.md).
 
+Prepared artifacts can contain optional `capture.info.json` companions in their
+root and individual model folders. Explicit Prepare Models, Reveal Models and
+export operations snapshot the location title and variant title through the SDK's
+metadata-only `EarthCaptureStore.recordIdentity` worker. Revealing an existing
+preparation refreshes its companions without preparing geometry again. Names are
+portable metadata; UUID directories, raw archives and model payloads retain their
+identities and bytes. See the [prepared-folder identity contract](TECHNICAL_REFERENCE.md#prepared-folder-display-identity).
+
 API keys stay in Keychain or active memory. They are excluded from settings,
-projects, request history and source artifacts. Preferences go through the one
-settings owner and `appSettings.json`; feature views/stores do not introduce
-independent preference files or `UserDefaults`. The request ledger is app-wide.
+projects, request history and source artifacts. Library preferences go through
+the one settings owner and `appSettings.json`. The file owner retains only the
+storage-location bookmark in a separate bootstrap file, described below; feature
+views/stores do not introduce independent preference files or `UserDefaults`.
+The request ledger is app-wide.
+
+## Moving storage
+
+**Settings → Storage → Move Storage…** moves the existing managed library to an
+empty writable folder. It does not merge libraries. The destination must be
+outside the current root and its parents. Download/preparation/export/preview
+jobs, history operations and pending project/settings saves must finish first.
+The app blocks new actions, stops request-history refreshes and closes its SQLite
+connection before file copying. All filesystem work remains with `EarthAppFiles`;
+the UI consumes progress and sends move/cancel actions.
+
+The file owner copies `projects`, `stats` and any `appSettings.json` to a private
+staging folder in the destination, rejects links and unsupported file types, and
+compares source/copy hashes with bounded buffers. It checks the source inventory
+again before publication. Project/source/preparation/export identities and file
+bytes are retained. Other files at the previous root are left in place.
+
+Only after verification and publication does it atomically save the selected
+root's security-scoped bookmark to `MessEarthKit/StorageLocation.json` inside the
+system Application Support directory. This schema-1 bootstrap file remains
+outside movable library storage. Root access is retained by the file owner;
+operation-specific leases use that authorization. Subsequent launches resolve
+the bookmark without mounting drives or presenting system UI. Stale bookmarks
+are refreshed after access validation. An invalid or unavailable selection fails
+explicitly without choosing the default root or recreating a missing selected
+folder. No project, settings or export-history schema changes are involved.
+
+Failure or cancellation before location publication leaves the original library
+active and removes only this move's copies. After publication, the new location
+is authoritative; cleanup failure or late cancellation leaves old copies and
+reports a Finder action. Old owners reject further managed I/O. The composition
+root rebuilds project/settings/usage/viewer owners for the new URLs, preserving
+the current API-key field; Keychain storage is independent of the library.
+
+The move temporarily needs space for another copy of the managed data. An app
+or system interruption can leave staged or published copies in the destination;
+the saved location determines which library opens. No interrupted copy is
+automatically adopted or deleted.
 
 ## Source, preparation and export lifetimes
 
@@ -86,21 +135,28 @@ service retains access while preflighting/writing and revalidates the exact
 source/preparation before publication. Offline preparation records its result
 on that variant without changing the current editing location or preview.
 
-Successful GLB publication appends provenance and the managed output reference
+Successful GLB/USDZ publication appends provenance and the managed output reference
 to `exports.json` with a serialized atomic write. A missing history file is the
 initial state; malformed, unsupported or mismatched history fails explicitly.
 Missing outputs remain recorded as unavailable, and Reveal rechecks existence
-and confinement. If history writing fails after GLB publication, keep the file
+and confinement. If history writing fails after output publication, keep the file
 and report the failure with a Finder action. Publication that wins a concurrent
 cancellation still records the completed file. Cancellation before publication
 adds no history and cannot remove earlier exports.
 
 Each export can be renamed or explicitly deleted while project work is idle.
-Rename keeps the export UUID and provenance, moves the GLB and any optional
+Rename keeps the export UUID and provenance, moves the GLB or USDZ and any optional GLB
 `.glb.info.json` together, then atomically updates history. It rejects invalid
 names and existing destinations; ordinary failures restore the original files.
 Capture names embedded inside the files remain unchanged. Interrupted rename
 can leave a recorded file unavailable and requires review in Finder.
+
+History schema 1 accepts `.glb` and `.usdz` filenames and derives the managed
+path from that record. Existing GLBs remain unchanged. USDZ keeps its detailed
+channel/optimization/identity metadata inside its root layer; listing reads only
+that bounded marker. Format and optimization settings are snapshotted with the
+variant request. Each regular/optimized export gets a fresh UUID output folder.
+There is no scan, history reassignment or rewrite of older files.
 
 ## Confinement and access
 
@@ -117,6 +173,22 @@ be released independently of retained project jobs.
 
 Report typed access, storage, corruption and unsupported-format errors. Runtime
 diagnostics must exclude credentials, source URLs and private absolute paths.
+
+## Export viewer read lifetime
+
+VIEW starts a read of the specific history/project/export identity in a dedicated
+window. It never regenerates output from a capture or preparation. The app-files
+actor resolves the managed output and holds its security scope while the worker
+reads and uploads it. Active read tokens block rename/export deletion for that
+export and project deletion for its project. Attribute identity/size/modification
+time are rechecked at completion; changed files fail the load.
+
+The actor remains reentrant during decoding, so unrelated metadata work can
+continue. Cancellation keeps the lease until native work settles. Close or a new
+selection cancels the old request; late results cannot attach to the window.
+After upload, only immutable GPU resources and cached display values remain.
+Closing releases them. No new managed folders, history schema or preferences are
+introduced by viewing. The capture preview retains its own lifecycle.
 
 ## Confirmed deletion
 

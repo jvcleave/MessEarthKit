@@ -1,6 +1,6 @@
 import Foundation
 
-/// Authored delivery identity, independent of the rounded display/file name.
+/// Authored capture/delivery identity, independent of the rounded display/file name.
 /// The request retains the exact capture centre, dimensions and detail error.
 public struct EarthCaptureIdentity: Codable, Equatable, Sendable
 {

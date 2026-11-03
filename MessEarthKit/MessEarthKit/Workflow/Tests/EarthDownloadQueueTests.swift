@@ -147,6 +147,26 @@ private actor PreparationGateFixture
     func release(_ id: Int) { released.insert(id) }
 }
 
+@Test @MainActor func downloadQueueIncludesCompletionRefreshInActiveWork() async throws
+{
+    let root = try projectStoreTestRoot()
+    defer { try? FileManager.default.removeItem(at: root) }
+    let files = try EarthAppFiles(storageRootURL: root)
+    try await files.initialize()
+    let project = try await EarthProjectStore(files: files).create()
+    let archive = try await projectSourceFixture(files: files, projectID: project.id)
+    let collection = try await EarthModelPreparer().prepare(archive: archive, directoryURL: root.appendingPathComponent("Prepared"), profile: EarthPreparationProfile())
+    let gate = PreparationGateFixture(), queue = EarthDownloadQueue()
+    let job = EarthDownloadJob(id: .init(projectID: project.id, variantID: UUID()), generation: UUID(), locationID: UUID(), sourceID: UUID())
+    let accepted = queue.enqueue(job: job, download: { _ in archive }, prepare: { _, _ in collection }, onDownloaded: { _ in }, onFinished: { _ = try? await gate.run(0) })
+    #expect(accepted)
+    try await awaitDownloadQueue { await gate.started == [0] }
+    // Physical work is complete, but its awaited metadata refresh still owns I/O.
+    #expect(queue.jobs[job.id]?.phase == .complete && queue.hasActiveWork)
+    await gate.release(0)
+    try await awaitDownloadQueue { !queue.hasActiveWork }
+}
+
 // A queued cancellation must finish before the running preparation does, and a
 // failed native operation must release admission for another caller.
 @Test @MainActor func preparationGateReleasesFailureAndCancelsWaitingCaller() async throws

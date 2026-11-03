@@ -7,7 +7,9 @@ platform slices are omitted because MessEarthKit supports macOS.
 
 `Sources/` holds compressed implementation snapshots for recovery and inspection.
 These are source archives stored directly in this repository, without submodules
-or Git LFS. Normal builds use the preserved frameworks. Rebuilding the frameworks
+or Git LFS. Normal decoding builds use the preserved frameworks. USDZ optimization compiles
+the pinned meshoptimizer source subset in `Sources/EarthMeshOptimizer/vendor/`.
+Rebuilding the frameworks
 is an explicit maintenance operation.
 
 | Component | Version | Preserved source | License notices |
@@ -16,6 +18,7 @@ is an explicit maintenance operation.
 | DracoSwift | 1.5.7 | [Original package wrapper](Sources/DracoSwift-1.5.7.tar.gz) | [Apache 2.0](Licenses/DracoSwift/LICENSE) |
 | Google Draco | 1.5.7 | [Native codec implementation](Sources/draco-1.5.7.tar.gz) | [Apache 2.0 and authors](Licenses/Draco/) |
 | KTX-Software | 4.2.1 | [libktx and bundled native codecs](Sources/KTX-Software-4.2.1.tar.gz) | [Notices](Licenses/KTX-Software/NOTICE.md), [license texts](Licenses/KTX-Software/LICENSES/), [Ericsson terms](Licenses/KTX-Software/ETCDEC-LICENSE.txt) |
+| meshoptimizer | 1.3 | [Pinned source archive](Sources/meshoptimizer-1.3.tar.gz) | [MIT](Licenses/meshoptimizer/LICENSE.md) |
 | cgltf | GLTFKit2's embedded revision | `GLTFKit2/deps/cgltf/` in the GLTFKit2 archive | [MIT](Licenses/cgltf/LICENSE) |
 
 [PROVENANCE.json](PROVENANCE.json) records immutable upstream revisions, the
@@ -26,7 +29,11 @@ not needed for the native codec and are excluded. KTX's Basis Universal, ASTC,
 zstd and other native sources and their notices remain in its archive.
 
 The archived package manifests describe upstream packaging; MessEarthKit does
-not resolve them. The root `Package.swift` references only local binary targets.
+not resolve them. The root `Package.swift` references local binary targets and the private
+`EarthMeshOptimizer` C++ target, with no remote package resolution. The selected
+meshoptimizer algorithms support remapping, cache/fetch ordering and simplification;
+no mesh compression decoder is shipped. The MIT notice is also copied into the
+Swift package resource bundle for distribution.
 
 ## Verify the preserved files
 

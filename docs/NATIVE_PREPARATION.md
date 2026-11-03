@@ -118,3 +118,10 @@ Optimized-copy checks do not establish identical coarser mip samples. Exact
 nearest-sampling ties are sensitive to Float UV precision. Processing beyond the
 supported native working set or exact shared-mip/normal-field delivery requires
 additional decoder or artifact contracts.
+
+## USDZ deliveries
+
+The selected preparation policy is carried into USDZ export metadata. Ordinary
+USDZ retains that prepared detail. A separate explicit optimized delivery profile
+controls mesh simplification and optional texture resizing without changing the
+prepared collection. See [USDZ output and optimization](TECHNICAL_REFERENCE.md#usdz-output-and-optimization).
