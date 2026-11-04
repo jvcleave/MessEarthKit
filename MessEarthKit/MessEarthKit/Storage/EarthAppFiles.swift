@@ -438,6 +438,24 @@ actor EarthAppFiles
         return size.intValue > 0 ? size.intValue : nil
     }
 
+    /// Queue results retain their export identity across history renames.
+    /// An explicitly unrecorded publication keeps its known managed reference.
+    func queuedExportFileURL(_ entry: EarthExportQueueEntry) async throws -> URL
+    {
+        try entry.validate()
+        guard entry.phase == .complete, let saved = entry.result else { throw EarthAppFilesError.missingFile }
+        let projectID = entry.request.projectID
+        var records: [EarthProjectExportRecord] = []
+        do { records = try await EarthProjectExportHistoryStore(projectID: projectID, files: self).records() }
+        catch { if !entry.isUnrecorded { throw error } }
+        let record: EarthProjectExportRecord
+        if let current = records.first(where: { $0.id == saved.id }) { record = current }
+        else if entry.isUnrecorded { record = saved }
+        else { throw EarthAppFilesError.missingFile }
+        guard try exportFileIsAvailable(projectID: projectID, record: record) else { throw EarthAppFilesError.missingFile }
+        return try exportFileURL(projectID: projectID, record: record)
+    }
+
     /// Resolve exact saved identities, including a later history rename. Read
     /// tokens prevent project/output mutation until the copy worker settles.
     func collectExports(_ entries: [EarthExportQueueEntry], to parent: URL, progress: @escaping @Sendable (Int, Int) -> Void) async throws -> URL

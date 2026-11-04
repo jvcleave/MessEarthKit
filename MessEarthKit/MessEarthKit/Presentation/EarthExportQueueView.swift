@@ -92,6 +92,8 @@ struct EarthExportQueueView: View
                 .labelStyle(.iconOnly)
                 if entry.phase == .failed || entry.phase == .cancelled
                 { Button("Retry") { queue.retry(entry.id) }.disabled(queue.containsPending(entry.request)) }
+                if entry.phase == .complete
+                { Button("Show in Finder") { queue.reveal(entry.id) } }
             }
             .disabled(!queue.canEdit)
         }

@@ -833,6 +833,9 @@ START processes checked pending entries; COLLECT copies checked complete entries
 Select All/Deselect All and Remove Checked are available. Removing an entry
 leaves exported files and project history intact. Up/down controls reorder the
 stopped queue. Failed/cancelled rows offer Retry with their original request.
+Completed rows offer **Show in Finder** for the saved export, including while
+other queued items run. Reveal follows later history renames by export identity
+and reports missing files explicitly.
 
 Exports run one at a time and continue across navigation. An individual error
 does not discard other results. **CANCEL** waits for the worker to stop and keeps

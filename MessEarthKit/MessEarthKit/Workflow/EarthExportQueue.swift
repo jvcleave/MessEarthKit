@@ -265,6 +265,21 @@ final class EarthExportQueue
         }
     }
 
+    func reveal(_ id: UUID)
+    {
+        guard let entry = entries.first(where: { $0.id == id }), entry.phase == .complete else { return }
+        operationError = nil
+        Task
+        { [weak self, files] in
+            do
+            {
+                let url = try await files.queuedExportFileURL(entry)
+                await files.reveal(url)
+            }
+            catch { self?.operationError = error.localizedDescription }
+        }
+    }
+
     func revealCollection()
     {
         guard let lastCollectionURL else { return }

@@ -96,11 +96,15 @@ private func queueTestRequest(files: EarthAppFiles, store: EarthProjectStore) as
     _ = try await firstService.rename(a, to: "Renamed result")
     let recollected = try await files.collectExports([completed[0]], to: destination, progress: { _, _ in })
     #expect(FileManager.default.fileExists(atPath: recollected.appendingPathComponent("Renamed result.glb").path))
+    let revealed = try await files.queuedExportFileURL(completed[0])
+    #expect(revealed.lastPathComponent == "Renamed result.glb" && revealed.deletingLastPathComponent() == source.deletingLastPathComponent())
     queue.removeIncluded()
     try await waitForExportQueue { !queue.isBusy }
     #expect(queue.entries.map(\.id) == [excludedID])
     let firstHistory = try await firstService.exports(), secondHistory = try await secondService.exports()
     #expect(firstHistory.count == 1 && secondHistory.count == 1)
+    try FileManager.default.removeItem(at: revealed)
+    await #expect(throws: EarthAppFilesError.missingFile) { try await files.queuedExportFileURL(completed[0]) }
 }
 
 private actor ExportQueueGate
@@ -288,6 +292,7 @@ private actor ExportQueueGate
     try #require(queue.operationError == nil)
     let batch = try #require(queue.lastCollectionURL), record = try #require(entry.result)
     let original = try await files.exportFileURL(projectID: request.projectID, record: record)
+    #expect(try await files.queuedExportFileURL(entry) == original)
     #expect(try Data(contentsOf: batch.appendingPathComponent(record.fileName)) == Data(contentsOf: original))
     #expect(try await files.readMetadata(.exports(request.projectID)) == damaged)
 }

@@ -200,6 +200,9 @@ optional `.glb.info.json` companion. Duplicate names receive numeric suffixes,
 including matching companion names; existing destination files are never replaced.
 The source exports and history remain unchanged. A known output whose history
 write failed can be collected from its explicit retained reference.
+Completed queue rows also offer Show in Finder. The file owner resolves the
+same saved export identity through current history, or its explicitly unrecorded
+reference, and rechecks file availability and confinement before revealing it.
 
 The file owner retains source/destination access and export read tokens while a
 worker streams copies in bounded buffers, verifies their SHA-256 hashes and
