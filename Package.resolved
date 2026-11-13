@@ -1,0 +1,15 @@
+{
+  "originHash" : "cf463c3fe7df00812122abf1a153b9ceb7757d57c638df5a17280f7a7e53b0d3",
+  "pins" : [
+    {
+      "identity" : "messglbkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jvcleave/MessGLBKit.git",
+      "state" : {
+        "revision" : "57b0c3bf0fe5c6fdba2180725128035471027093",
+        "version" : "0.1.0"
+      }
+    }
+  ],
+  "version" : 3
+}

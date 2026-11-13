@@ -10,7 +10,7 @@ for aggregate-import versus per-model budgets.
 ## Native decoder admission
 
 Before native mesh decoding,
-[`EarthDracoAdmission.mm`](../Sources/EarthDracoBridge/EarthDracoAdmission.mm)
+[`GLBDracoAdmission.mm`](https://github.com/jvcleave/MessGLBKit/blob/0.1.0/Sources/GLBDracoBridge/GLBDracoAdmission.mm)
 reads the Draco topology prefix with a constant-memory cursor. It checks the
 signature, version, method, bounded metadata and conservative point/face counts
 without allocating a mesh or count-sized vector. Both Swift admission and the

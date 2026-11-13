@@ -286,10 +286,10 @@ Add the library product to the consuming target's `dependencies`:
 .product(name: "MessEarthKit", package: "MessEarthKit")
 ```
 
-Use an exact version or Git revision when you need a fixed integration. This
-checkout includes its native frameworks and recovery source archives under
-[`ThirdParty/`](ThirdParty/README.md); normal builds do not download GLTFKit2 or
-DracoSwift from upstream.
+Use an exact version or Git revision when you need a fixed integration.
+SwiftPM resolves [MessGLBKit](https://github.com/jvcleave/MessGLBKit), which
+includes the GLTFKit2 and Draco frameworks in its checkout. See
+[`ThirdParty/`](ThirdParty/README.md) for source recovery and meshoptimizer.
 
 ### Read a tileset or GLB
 

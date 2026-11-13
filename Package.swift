@@ -9,15 +9,12 @@ let package = Package(
         .library(name: "MessEarthKit", targets: ["MessEarthKit"]),
         .executable(name: "MessEarthKitIntegrationProbe", targets: ["MessEarthKitIntegrationProbe"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/jvcleave/MessGLBKit.git", exact: "0.1.0"),
+    ],
     targets: [
-        .binaryTarget(name: "GLTFKit2", path: "ThirdParty/Artifacts/GLTFKit2.xcframework"),
-        .binaryTarget(name: "Draco", path: "ThirdParty/Artifacts/Draco.xcframework"),
-        .target(
-            name: "EarthDracoBridge",
-            dependencies: ["GLTFKit2", "Draco"]
-        ),
         .target(name: "EarthMeshOptimizer", exclude: ["vendor/LICENSE.md"], publicHeadersPath: "include"),
-        .target(name: "MessEarthKit", dependencies: ["EarthDracoBridge", "GLTFKit2", "EarthMeshOptimizer"], resources: [.copy("Resources/ThirdPartyNotices")], linkerSettings: [.linkedLibrary("sqlite3")]),
+        .target(name: "MessEarthKit", dependencies: [.product(name: "MessGLBKit", package: "MessGLBKit"), "EarthMeshOptimizer"], resources: [.copy("Resources/ThirdPartyNotices")], linkerSettings: [.linkedLibrary("sqlite3")]),
         .testTarget(name: "MessEarthKitTests", dependencies: ["MessEarthKit"], resources: [.copy("Fixtures")]),
         // Compile actual app storage/workflow/renderer sources for headless verification,
         // without exposing app types from the public SDK or launching its UI.

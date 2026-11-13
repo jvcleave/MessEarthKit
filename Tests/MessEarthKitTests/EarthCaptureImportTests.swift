@@ -92,49 +92,118 @@ func automaticSectionsPreserveAlignmentAndSaveIndependentSources(textureBudget: 
     #expect(capture.geographicOrigin == nil)
 }
 
-@Test func omittedTextureFiltersUseDefaultsButExplicitZeroIsRejected() async throws
+@Test func standaloneGLBBakesAllSkinWeightsInSceneSpace() async throws
+{
+    let vertices = [SIMD3<Float>(0, 0, 0), SIMD3(1, 0, 0), SIMD3(0, 1, 0)].map
+    { EarthVertex(position: $0, normal: SIMD3(0, 0, 1), textureCoordinate: SIMD2($0.x, $0.y), color: SIMD4(repeating: 1)) }
+    let material = EarthMaterial(name: "Analytic", baseColor: SIMD4(repeating: 1), baseColorTexture: nil, metallic: 0, roughness: 1, isUnlit: false, isDoubleSided: false, alphaMode: .opaque, alphaCutoff: 0.5)
+    let staticGLB = try EarthDerivativeGLB.encode(vertices: vertices, indices: [0, 1, 2], material: material, name: "Analytic", attributions: [], sourceID: "analytic")
+    let jsonLength = Int(staticGLB.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)) })
+    var json = try #require(JSONSerialization.jsonObject(with: staticGLB.subdata(in: 20 ..< 20 + jsonLength)) as? [String: Any])
+    var binary = Data(staticGLB.suffix(from: 28 + jsonLength))
+    var views = try #require(json["bufferViews"] as? [[String: Any]])
+    var accessors = try #require(json["accessors"] as? [[String: Any]])
+
+    func appendAccessor(_ bytes: Data, type: String, component: Int, count: Int, normalized: Bool = false) -> Int
+    {
+        while !binary.count.isMultiple(of: 4) { binary.append(0) }
+        let view = views.count
+        views.append(["buffer": 0, "byteOffset": binary.count, "byteLength": bytes.count])
+        binary.append(bytes)
+        let accessor = accessors.count
+        var entry: [String: Any] = ["bufferView": view, "type": type, "componentType": component, "count": count]
+        if normalized { entry["normalized"] = true }
+        accessors.append(entry)
+        return accessor
+    }
+
+    let joints0 = appendAccessor(Data([0, 1, 2, 3, 0, 0, 0, 0, 0, 0, 0, 0]), type: "VEC4", component: 5121, count: 3)
+    let weights0 = appendAccessor(Data([34, 34, 34, 34, 255, 0, 0, 0, 255, 0, 0, 0]), type: "VEC4", component: 5121, count: 3, normalized: true)
+    let joints1 = appendAccessor(Data([4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), type: "VEC4", component: 5121, count: 3)
+    let weights1 = appendAccessor(Data([119, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), type: "VEC4", component: 5121, count: 3, normalized: true)
+    let identity: [Float] = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+    var fifthBind = identity
+    fifthBind[13] = -1
+    let bindBytes = (Array(repeating: identity, count: 4).flatMap { $0 } + fifthBind).map { $0.bitPattern.littleEndian }
+    let binds = appendAccessor(bindBytes.withUnsafeBytes { Data($0) }, type: "MAT4", component: 5126, count: 5)
+
+    let halfSqrt = sqrt(0.5)
+    json["nodes"] = [
+        ["mesh": 0, "skin": 0, "translation": [99, 0, 0]],
+        ["children": [2, 3, 4, 5, 6], "translation": [2, 0, 0]],
+        [:], [:], [:], [:],
+        ["translation": [0, 0, 4], "rotation": [halfSqrt, 0, 0, halfSqrt]],
+    ]
+    json["scenes"] = [["nodes": [0, 1]]]
+    json["skins"] = [["joints": [2, 3, 4, 5, 6], "inverseBindMatrices": binds, "skeleton": 1]]
+    var meshes = try #require(json["meshes"] as? [[String: Any]])
+    var primitives = try #require(meshes[0]["primitives"] as? [[String: Any]])
+    var attributes = try #require(primitives[0]["attributes"] as? [String: Int])
+    attributes["JOINTS_0"] = joints0
+    attributes["WEIGHTS_0"] = weights0
+    attributes["JOINTS_1"] = joints1
+    attributes["WEIGHTS_1"] = weights1
+    primitives[0]["attributes"] = attributes
+    meshes[0]["primitives"] = primitives
+    json["meshes"] = meshes
+    json["bufferViews"] = views
+    json["accessors"] = accessors
+    json["buffers"] = [["byteLength": binary.count]]
+    var encoded = try JSONSerialization.data(withJSONObject: json)
+    while !encoded.count.isMultiple(of: 4) { encoded.append(32) }
+    var glb = Data()
+    for var word in [UInt32(0x46546C67), 2, UInt32(28 + encoded.count + binary.count), UInt32(encoded.count), 0x4E4F534A].map(\.littleEndian)
+    { withUnsafeBytes(of: &word) { glb.append(contentsOf: $0) } }
+    glb.append(encoded)
+    for var word in [UInt32(binary.count), 0x004E4942].map(\.littleEndian)
+    { withUnsafeBytes(of: &word) { glb.append(contentsOf: $0) } }
+    glb.append(binary)
+
+    let file = EarthSourceFile(relativePath: "analytic.glb", data: glb)
+    await #expect(throws: EarthImportError.self)
+    { try await EarthCaptureImporter().importSourceFiles(sourceFiles: [file], rootSourcePath: file.relativePath) }
+    let importer = EarthCaptureImporter(glbSkinning: .bakeReferencePose)
+    let capture = try await importer.importSourceFiles(sourceFiles: [file], rootSourcePath: file.relativePath)
+    let mesh = try #require(capture.meshes.first)
+    // Joint 4 contributes 7/15 of (0, 0, 3) and rotates +Z to -Y.
+    // The skeleton root translates every vertex by +2 along X.
+    #expect(simd_distance(mesh.vertices[0].position, SIMD3(2, 0, 1.4)) < 0.00001)
+    #expect(simd_distance(mesh.vertices[0].normal, simd_normalize(SIMD3(0, -7, 8))) < 0.00001)
+    #expect(mesh.vertices[1].position == SIMD3(3, 0, 0))
+    #expect(capture.sourceFiles.first?.data == glb)
+}
+
+@Test(arguments: [false, true])
+func standaloneGLBResolvesEscapedImageMIMEWithDefaultFilters(explicitZero: Bool) async throws
 {
     let original = try Data(contentsOf: fixtureDirectory.appendingPathComponent("block.glb"))
     let jsonLength = Int(original.withUnsafeBytes { UInt32(littleEndian: $0.loadUnaligned(fromByteOffset: 12, as: UInt32.self)) })
-    let originalJSON = try #require(JSONSerialization.jsonObject(with: original.subdata(in: 20 ..< 20 + jsonLength)) as? [String: Any])
+    var json = try #require(JSONSerialization.jsonObject(with: original.subdata(in: 20 ..< 20 + jsonLength)) as? [String: Any])
+    var sampler = ["wrapS": 33071, "wrapT": 33071]
+    if explicitZero { sampler["minFilter"] = 0 }
+    json["samplers"] = [sampler]
+    var encoded = try JSONSerialization.data(withJSONObject: json)
+    try #require(encoded.range(of: Data(#"image\/png"#.utf8)) != nil)
+    while !encoded.count.isMultiple(of: 4) { encoded.append(32) }
     let binaryChunk = original.suffix(from: 20 + jsonLength)
-    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: directory) }
-    for minFilter in [nil, 0] as [Int?]
+    var glb = Data()
+    for var word in [UInt32(0x46546C67), 2, UInt32(20 + encoded.count + binaryChunk.count), UInt32(encoded.count), 0x4E4F534A].map(\.littleEndian)
+    { withUnsafeBytes(of: &word) { glb.append(contentsOf: $0) } }
+    glb.append(encoded)
+    glb.append(binaryChunk)
+    let file = EarthSourceFile(relativePath: "escaped-image.glb", data: glb)
+    let importer = EarthCaptureImporter()
+    do
     {
-        var json = originalJSON
-        var sampler = ["wrapS": 33071, "wrapT": 33071]
-        if let minFilter { sampler["minFilter"] = minFilter }
-        json["samplers"] = [sampler]
-        var jsonData = try JSONSerialization.data(withJSONObject: json, options: [.withoutEscapingSlashes])
-        while !jsonData.count.isMultiple(of: 4) { jsonData.append(0x20) }
-        var source = Data()
-        for word: UInt32 in [0x46546C67, 2, UInt32(20 + jsonData.count + binaryChunk.count), UInt32(jsonData.count), 0x4E4F534A]
-        {
-            var encoded = word.littleEndian
-            withUnsafeBytes(of: &encoded) { source.append(contentsOf: $0) }
-        }
-        source.append(jsonData)
-        source.append(binaryChunk)
-        let file = directory.appendingPathComponent("sampler.glb")
-        try source.write(to: file)
-        if minFilter == nil
-        {
-            let capture = try await EarthCaptureImporter().importFile(fileURL: file)
-            let texture = try #require(capture.materials.first?.baseColorTexture)
-            // The client selects linear filtering/mips when glTF omits filters.
-            #expect(!texture.usesNearestMagnification && !texture.usesNearestMinification && texture.mipmapFilter == .linear)
-        }
-        else
-        {
-            do
-            {
-                _ = try await EarthCaptureImporter().importFile(fileURL: file)
-                Issue.record("An explicit invalid filter was treated as an omitted default.")
-            }
-            catch EarthImportError.unsupportedContent {}
-        }
+        let capture = try await importer.importSourceFiles(sourceFiles: [file], rootSourcePath: file.relativePath)
+        #expect(!explicitZero)
+        let texture = try #require(capture.materials.first?.baseColorTexture)
+        #expect(texture.mimeType == "image/png")
+        #expect(!texture.usesNearestMagnification && !texture.usesNearestMinification && texture.mipmapFilter == .linear)
+    }
+    catch let EarthImportError.unsupportedContent(reason)
+    {
+        #expect(explicitZero && reason == "Unknown texture filter.")
     }
 }
 

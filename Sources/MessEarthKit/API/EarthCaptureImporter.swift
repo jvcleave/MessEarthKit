@@ -5,11 +5,25 @@ import simd
 /// and keeps source files accessible and unchanged until this operation completes.
 public actor EarthCaptureImporter
 {
+    public enum GLBSkinning: Sendable
+    {
+        case reject
+        case bakeReferencePose
+    }
+
     private let limits: EarthImportLimits
+    private let glbSkinning: GLBSkinning
 
     public init(limits: EarthImportLimits = EarthImportLimits())
     {
+        self.init(limits: limits, glbSkinning: .reject)
+    }
+
+    /// Reference-pose baking applies to standalone GLBs without animation clips.
+    public init(limits: EarthImportLimits = EarthImportLimits(), glbSkinning: GLBSkinning)
+    {
         self.limits = limits
+        self.glbSkinning = glbSkinning
     }
 
     public func importFile(fileURL: URL) throws -> EarthCapture
@@ -133,7 +147,8 @@ public actor EarthCaptureImporter
         switch sourceURL.pathExtension.lowercased()
         {
             case "glb":
-                let json = try EarthGLBDecoder(limits: limits).preflight(data: data, enforcesVertexBudget: false)
+                let decoder = EarthGLBDecoder(limits: limits, skinning: glbSkinning)
+                let json = try decoder.preflight(data: data, enforcesVertexBudget: false)
                 let combined = try EarthCombinedGLBMetadata.read(json: json, maximumEntries: limits.maximumNodes)
                 assembly.identity = try EarthCaptureIdentity.readMetadata(json: json)
                 if let identity = assembly.identity, let combined, identity.request.center != combined.geographicOrigin
@@ -141,7 +156,7 @@ public actor EarthCaptureImporter
                 preparationProfile = try combined?.sourceProfile ?? EarthPreparationProfile.readMetadata(json: json)
                 origin = combined?.geographicOrigin
                 incompleteReason = combined?.preparationComplete == false ? combined?.preparationIssue : nil
-                try appendGLB(data: data, transform: matrix_identity_double4x4, assembly: &assembly)
+                try appendGLB(data: data, transform: matrix_identity_double4x4, skinning: glbSkinning, assembly: &assembly)
                 if let combined { assembly.attributions = Set(combined.attributions) }
             case "json":
                 let tileset = try decodeTileset(data: data)
@@ -226,10 +241,11 @@ public actor EarthCaptureImporter
         data: Data,
         transform: simd_double4x4,
         allowsDegenerateOnlyScene: Bool = false,
+        skinning: GLBSkinning = .reject,
         assembly: inout EarthImportAssembly
     ) throws
     {
-        let part = try autoreleasepool { try EarthGLBDecoder(limits: limits).decode(data: data, transform: transform, allowsDegenerateOnlyScene: allowsDegenerateOnlyScene) }
+        let part = try autoreleasepool { try EarthGLBDecoder(limits: limits, skinning: skinning).decode(data: data, transform: transform, allowsDegenerateOnlyScene: allowsDegenerateOnlyScene) }
         let addedVertices = part.meshes.reduce(0) { $0 + $1.vertices.count }
         guard addedVertices <= limits.maximumVertices - assembly.vertexCount
         else { throw EarthImportError.limitExceeded("Capture vertex count would reach \(assembly.vertexCount + addedVertices) (limit \(limits.maximumVertices)). Increase Maximum Vertices or reduce the area or detail.") }

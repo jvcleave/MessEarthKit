@@ -28,9 +28,10 @@ example project at `MessEarthKit/MessEarthKit.xcodeproj`.
 
 ## Implementation and Verification
 
-- The package owns geographic transforms, tile/GLB decoding, validation, immutable
-  CPU assets, and any explicitly selected output codec. Keep one public library
-  module. Do not import SwiftUI or application types or use sibling package paths.
+- The package owns geographic transforms, tileset decoding, immutable capture
+  assets, and explicitly selected output codecs. MessGLBKit owns shared GLB
+  decoding and validation. Keep one public library module. Do not import
+  SwiftUI or application types or use sibling package paths.
 - The example app uses only public package APIs. It owns security-scoped file
   access, presentation, job lifetime, and GPU preview resources. Views consume
   prepared values and send semantic actions to main-actor observable view models.

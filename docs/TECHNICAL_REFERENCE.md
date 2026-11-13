@@ -17,14 +17,12 @@ Commands and source paths below assume the repository root.
 
 ## Package use
 
-The package requires macOS 15.6+ and Swift 6.2+. It includes GLTFKit2 0.5.15 and
-DracoSwift 1.5.7 as local binary targets with universal macOS arm64/x86_64 slices.
-Normal builds require no upstream package or release downloads. Matching native
-implementation sources, including Google Draco 1.5.7, libktx 4.2.1 and embedded
-cgltf, are preserved with licenses, immutable revisions and checksums in
-[`ThirdParty/`](../ThirdParty/README.md). That reference also documents source
-recovery and intentionally excluded optional upstream components. The package
-has no sibling checkout paths or runtime Python/Blender dependency.
+The package requires macOS 15.6+ and Swift 6.2+. It pins
+[MessGLBKit 0.1.0](https://github.com/jvcleave/MessGLBKit/tree/0.1.0), which
+ships GLTFKit2 and Draco for macOS arm64 and x86_64. The package checkout
+includes the decoder binaries, licenses, and recovery sources. MessEarthKit
+builds the meshoptimizer subset in this repository for offline simplification.
+See [native dependencies](../ThirdParty/README.md) for provenance and recovery.
 
 | Task | API |
 | --- | --- |
@@ -488,7 +486,7 @@ interruption.
 
 One importer is a serial actor. Imports return immutable Sendable CPU values,
 throw a typed `EarthImportError`, or throw `CancellationError`. Native decoder
-objects stay on the worker. The private Objective-C++ bridge installs GLTFKit2's
+objects stay on the worker. MessGLBKit's Objective-C++ bridge installs GLTFKit2's
 stateless decoder plugin once per process; instances and output remain request-owned.
 
 Cancellation is cooperative. An active native decode finishes before the next
@@ -593,7 +591,7 @@ Offline import/preparation supports:
 
 | Format or feature | Supported behavior |
 | --- | --- |
-| glTF 2.0 `.glb` | Self-contained files; default scene or one unambiguous scene; static triangle primitives, interleaved accessors, unsigned indices, normalized vertex components, node transforms and vertex colors. Missing normals generate flat normals; reflections reverse winding. |
+| glTF 2.0 `.glb` | Self-contained files; default scene or one unambiguous scene; triangle primitives, interleaved accessors, unsigned indices, normalized vertex components, node transforms and vertex colors. Missing normals generate flat normals; reflections reverse winding. |
 | Materials and images | Embedded PNG/JPEG base-color images, UV set selection/transforms, sampling/wrap settings, color and metallic/roughness factors, unlit flags, sidedness and opaque/mask/blend alpha. Omitted filters use linear sampling with linear mip selection; unknown explicit filters fail. |
 | 3D Tiles 1.0/1.1 | Explicit Earth-centered hierarchies, box/sphere/region root bounds, nested transforms, ADD/REPLACE refinement and external local JSON tilesets. Direct GLB content in 1.0 requires `3DTILES_content_gltf`. |
 | Draco | Native `KHR_draco_mesh_compression` decoding. The independent Khronos/Cesium Box fixture checks against an uncompressed reference, allowing geometry/normal quantization. |
@@ -617,8 +615,15 @@ dimensions or output bytes exceeding admission throw `EarthImportError.limitExce
 This output budget does not bound ImageIO's transient allocations. See the
 [native preparation reference](NATIVE_PREPARATION.md#base-level-texture-subdivision).
 
+An importer configured with `glbSkinning: .bakeReferencePose` evaluates the
+default joint transforms of standalone GLBs without animation clips and returns
+static geometry. It applies all paired joint and weight sets and retains the
+original source bytes. The default policy and 3D Tiles imports require static
+source geometry. Joint transforms follow the
+[glTF skinning specification](https://github.com/KhronosGroup/glTF/blob/main/specification/2.0/Specification.adoc#skinning).
+
 Unsupported content includes Meshopt, other unverified extensions, sparse
-accessors, animation/skinning, GPU instancing, extra material maps, implicit
+accessors, animation clips, GPU instancing, extra material maps, implicit
 tiling, legacy tile containers and external GLB resource URLs. The importer
 rejects these explicitly without substituting geometry or materials. Local tile
 references must stay within the selected directory after symlink resolution.
