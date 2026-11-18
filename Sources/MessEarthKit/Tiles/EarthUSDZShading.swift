@@ -41,6 +41,7 @@ enum EarthUSDZShading
         meshes: [EarthMesh],
         materials: [EarthMaterial],
         geometryName: String,
+        preserveGLBAttributes: Bool = false,
         options: EarthExportOptions,
         optimization: EarthUSDZOptimizationProfile?,
         fileURL: URL,
@@ -57,7 +58,8 @@ enum EarthUSDZShading
             let source = materials[mesh.materialIndex]
             let factor = options.includeMaterials ? source.baseColor : SIMD4<Float>(0.5, 0.5, 0.5, 1)
             let alphaMode = options.includeMaterials ? source.alphaMode : .opaque
-            try text.write("  over \"Mesh\(index)\"\n  {\n   rel material:binding = </Model/Looks/Material\(index)>\n   uniform token subdivisionScheme = \"none\"\n   uniform bool doubleSided = \(source.isDoubleSided ? "true" : "false")\n")
+            let label = preserveGLBAttributes ? try " (\n   displayName = \(quoted(mesh.name))\n  )" : ""
+            try text.write("  over \"Mesh\(index)\"\(label)\n  {\n   rel material:binding = </Model/Looks/Material\(index)>\n   uniform token subdivisionScheme = \"none\"\n   uniform bool doubleSided = \(source.isDoubleSided ? "true" : "false")\n")
             if options.includeVertexColors
             {
                 try primvar(mesh: mesh, name: "displayOpacity", dimensions: 1, text: text) { SIMD4(repeating: $0.color.w) }
@@ -78,8 +80,9 @@ enum EarthUSDZShading
             var texture: String?
             if options.includeTextures, let image = source.baseColorTexture
             { texture = try writeTexture(image, optimization: optimization, staging: staging, textures: &textures) }
+            let label = preserveGLBAttributes ? try " (\n   displayName = \(quoted(source.name))\n  )" : ""
             try text.write(
-                "  def Material \"Material\(index)\"\n  {\n   token outputs:surface.connect = <\(path)/Surface.outputs:surface>\n   def Shader \"Surface\"\n   {\n    uniform token info:id = \"UsdPreviewSurface\"\n    custom bool messEarthKit:unlit = \(unlit ? "true" : "false")\n    custom color4f messEarthKit:baseColorFactor = \(tuple(factor, count: 4))\n"
+                "  def Material \"Material\(index)\"\(label)\n  {\n   token outputs:surface.connect = <\(path)/Surface.outputs:surface>\n   def Shader \"Surface\"\n   {\n    uniform token info:id = \"UsdPreviewSurface\"\n    custom bool messEarthKit:unlit = \(unlit ? "true" : "false")\n    custom color4f messEarthKit:baseColorFactor = \(tuple(factor, count: 4))\n"
             )
             let colorInput = unlit ? "emissiveColor" : "diffuseColor"
             if texture != nil
@@ -87,6 +90,9 @@ enum EarthUSDZShading
             else if options.includeVertexColors
             { try text.write("    color3f inputs:\(colorInput).connect = <\(path)/VertexColor.outputs:result>\n") }
             else { try text.write("    color3f inputs:\(colorInput) = \(tuple(factor, count: 3))\n") }
+            // In the unlit specular workflow this input is inactive. Keeping its
+            // authored value allows later material edits to recover the GLB factor.
+            if unlit, preserveGLBAttributes { try text.write("    float inputs:metallic = \(source.metallic)\n") }
             if unlit
             { try text.write("    color3f inputs:diffuseColor = (0,0,0)\n    int inputs:useSpecularWorkflow = 1\n    color3f inputs:specularColor = (0,0,0)\n") }
             else { try text.write("    float inputs:metallic = \(options.includeMaterials ? source.metallic : 0)\n") }

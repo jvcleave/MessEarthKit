@@ -15,6 +15,7 @@ struct EarthUSDZAppearanceReader
     struct Node
     {
         let type: String
+        var displayName: String?
         var properties: [String: Substring] = [:]
         var primvars: [String: Primvar] = [:]
     }
@@ -37,6 +38,7 @@ struct EarthUSDZAppearanceReader
         var nodes: [String: Node] = [:]
         var stack: [String] = []
         var pending: (String, String)?
+        var pendingDisplayName: String?
         var currentPrimvar: String?
         var rootFields: [String: Substring] = [:]
         for rawLine in text.split(separator: "\n")
@@ -63,8 +65,9 @@ struct EarthUSDZAppearanceReader
                 stack.append(next.0)
                 let path = "/" + stack.joined(separator: "/")
                 guard nodes[path] == nil else { throw Self.invalid() }
-                nodes[path] = Node(type: next.1)
+                nodes[path] = Node(type: next.1, displayName: pendingDisplayName)
                 pending = nil
+                pendingDisplayName = nil
                 continue
             }
             if line == "}"
@@ -80,6 +83,15 @@ struct EarthUSDZAppearanceReader
                 guard let name = currentPrimvar, let value = Self.quoted(line.dropFirst("interpolation = ".count)), ["constant", "faceVarying"].contains(value)
                 else { throw Self.invalid() }
                 nodes[path]?.primvars[name]?.interpolation = value
+                continue
+            }
+            if line.hasPrefix("displayName = ")
+            {
+                guard let pending, pendingDisplayName == nil,
+                      (path == "/Model/Geom" && pending.1 == "over") || (path == "/Model/Looks" && pending.1 == "def Material"),
+                      let label = try? JSONDecoder().decode(String.self, from: Data(line.dropFirst("displayName = ".count).utf8))
+                else { throw Self.invalid() }
+                pendingDisplayName = label
                 continue
             }
             // Metadata for the reference/inactive inherited material scope.
@@ -179,7 +191,12 @@ struct EarthUSDZAppearanceReader
                   try Self.vector(fields["inputs:specularColor"], count: 3) == .zero, fields["inputs:useSpecularWorkflow"] == "1"
             else { throw Self.invalid() }
             expected.formUnion(["inputs:diffuseColor", "inputs:specularColor", "inputs:useSpecularWorkflow"])
-            metallic = 0
+            if let authored = fields["inputs:metallic"]
+            {
+                metallic = try Self.scalar(authored)
+                expected.insert("inputs:metallic")
+            }
+            else { metallic = 0 }
         }
         else { expected.insert("inputs:metallic"); metallic = try Self.scalar(fields["inputs:metallic"]) }
         let roughness = try Self.scalar(fields["inputs:roughness"])
@@ -224,7 +241,7 @@ struct EarthUSDZAppearanceReader
             switch Self.quoted(texture["messEarthKit:mipmap"]) { case "none": mipmap = .none; case "linear": mipmap = .linear; default: throw Self.invalid() }
         }
         return Surface(
-            material: EarthMaterial(name: "Material \(mesh)", baseColor: factor, baseColorTexture: nil, metallic: metallic, roughness: roughness, isUnlit: unlit, isDoubleSided: try Self.boolean(geometry.properties["doubleSided"]), alphaMode: alphaMode, alphaCutoff: cutoff),
+            material: EarthMaterial(name: material.displayName ?? "Material \(mesh)", baseColor: factor, baseColorTexture: nil, metallic: metallic, roughness: roughness, isUnlit: unlit, isDoubleSided: try Self.boolean(geometry.properties["doubleSided"]), alphaMode: alphaMode, alphaCutoff: cutoff),
             texturePath: texturePath,
             textureScale: scale,
             vertexTint: tint,

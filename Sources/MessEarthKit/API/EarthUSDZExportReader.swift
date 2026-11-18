@@ -166,7 +166,8 @@ public actor EarthUSDZExportReader
                         materials.append(
                             EarthMaterial(name: source.name, baseColor: source.baseColor, baseColorTexture: texture, metallic: source.metallic, roughness: source.roughness, isUnlit: source.isUnlit, isDoubleSided: source.isDoubleSided, alphaMode: source.alphaMode, alphaCutoff: source.alphaCutoff)
                         )
-                        meshes.append(EarthMesh(id: meshes.count, name: "Model \(model) - Mesh \(ordinal)", vertices: vertices, triangleIndices: indices, materialIndex: materialIndex))
+                        let name = appearance.nodes["/Model/Geom/Mesh\(ordinal)"]?.displayName ?? "Model \(model) - Mesh \(ordinal)"
+                        meshes.append(EarthMesh(id: meshes.count, name: name, vertices: vertices, triangleIndices: indices, materialIndex: materialIndex))
                         vertexCount += vertices.count; indexCount += indices.count
                     }
                     for child in object.children.objects { try visit(child) }

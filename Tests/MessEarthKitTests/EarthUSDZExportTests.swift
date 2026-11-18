@@ -5,6 +5,17 @@ import ModelIO
 import simd
 import Testing
 
+@Test func staticConversionClassifiesOversizedInputBeforeParsing() throws
+{
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".usdz")
+    let input = Data(count: EarthImportLimits().maximumSourceBytes + 1)
+    #expect(throws: EarthStaticGLBOutsideProfile.self)
+    {
+        try EarthStaticGLBUSDZConverter.write(input, name: "Oversized", destination: destination)
+    }
+    #expect(!FileManager.default.fileExists(atPath: destination.path))
+}
+
 @Test func usdzStoresBinaryGeometryIdentityAndPublishesWithoutChangingSources() async throws
 {
     let parent = try preparationParent()

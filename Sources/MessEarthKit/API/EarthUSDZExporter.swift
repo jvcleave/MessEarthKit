@@ -34,6 +34,8 @@ public struct EarthUSDZExportMetadata: Codable, Sendable
     public let geographicOrigin: EarthGeographicOrigin
     public let captureIdentity: EarthCaptureIdentity?
     public let sourceProfile: EarthPreparationProfile
+    /// Export budget recorded by the delivered combined GLB, when it is the source.
+    public let glbDestinationProfile: EarthPreparationProfile?
     public let selectedModels: [Int]
     public let coversEntireSource: Bool
     public let preparationComplete: Bool
@@ -230,6 +232,7 @@ public actor EarthUSDZExporter
                 geographicOrigin: current.geographicOrigin,
                 captureIdentity: plan.identity,
                 sourceProfile: current.profile,
+                glbDestinationProfile: nil,
                 selectedModels: plan.source.models.map(\.id),
                 coversEntireSource: plan.coversEntireSource,
                 preparationComplete: current.state == .ready,

@@ -32,6 +32,7 @@ See [native dependencies](../ThirdParty/README.md) for provenance and recovery.
 | Save a source/model folder | `EarthCaptureStore` |
 | Check and write a standalone combined GLB | `EarthGLBExporter` |
 | Check and write standard or optimized USDZ | `EarthUSDZExporter` |
+| Convert a supported static GLB from its delivered bytes | `EarthStaticGLBUSDZConverter` |
 | Read this SDK's saved USDZ export into CPU values | `EarthUSDZExportReader` |
 
 Examples run in an asynchronous host context. Keys, observers and destination URLs
@@ -213,6 +214,27 @@ Preflight conservatively admits original selection estimates against the
 destination profile before optimization; a reduction target does not authorize
 oversized input decoding.
 
+### Convert a delivered static GLB
+
+Call `EarthStaticGLBUSDZConverter.write(_:name:destination:)` on an import
+worker with a new USDZ destination. The result reports the partition, surface
+and triangle counts and the attributions. Keep the original GLB for editing
+its authored graph or accessing source-specific metadata.
+
+The converter accepts a single static mesh with an optional translated parent,
+or a complete, unoptimized combined Earth GLB with full export channels. The
+profile requires triangles, authored normals and first-set UVs, and one opaque
+unlit material per primitive. It supports embedded base-color images with matching
+wrap axes and linear filtering. A texture combined with vertex colors requires
+a uniform effective tint per surface. The converter uses the default
+`EarthImportLimits` budgets. A source outside this profile throws
+`EarthStaticGLBOutsideProfile`. Invalid input, failed writes and cancellation
+propagate separately. The destination appears only after the archive is complete.
+
+Combined conversions preserve selection IDs, spatial partitions, capture identity
+and attribution in the Earth USDZ metadata. `sourceProfile` describes preparation
+and `glbDestinationProfile` records the delivery profile embedded in the GLB.
+
 ### Read an exported USDZ
 
 ```swift
@@ -233,6 +255,10 @@ checked. The known shader/property/primvar contract is validated explicitly;
 unknown graphs fail without placeholder materials. Native Model I/O geometry
 never leaves the worker. UVs return to the SDK's top-left convention. Raw RGBA,
 base factors, unlit/sidedness, alpha masks/blending, wraps and mip intent survive.
+The reader also accepts optional USD `displayName` metadata on mesh and material
+prims. It keeps those source labels while using the prim paths for binding. A
+scalar `inputs:metallic` authored on the unlit zero-specular shader is retained
+as an editable source value.
 The scalar appearance arrays are scanned without a per-scalar substring array.
 When normals were omitted, the reader generates flat face normals in double
 precision and admits the expanded vertex count against `maximumVertices`.
